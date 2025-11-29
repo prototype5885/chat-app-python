@@ -12,6 +12,7 @@ from sqlmodel import Field,  Session, SQLModel, create_engine, CHAR, func, text,
 from pydantic import BaseModel, EmailStr, model_validator
 from argon2 import PasswordHasher, exceptions
 from socketio import AsyncServer, ASGIApp # type: ignore
+# from cachetools import TTLCache, cached
 
 USER_LENGTH = 32
 SERVER_LENGTH = 64
@@ -41,6 +42,8 @@ def gen_id() -> str:
     if len(ulid) != ULID_LENGTH:
         raise Exception(f"generated ULID {ulid} should contain exactly {ULID_LENGTH} characters, but is {len(ulid)}")
     return ulid
+
+# ttl_cache = TTLCache(maxsize=1024, ttl=900)
    
 
 # class ULIDType(TypeDecorator):
@@ -130,6 +133,7 @@ def get_session():
     with Session(engine) as session:
         yield session
 
+# @cached(cache=ttl_cache, key=lambda db, token: (token))
 def auth_user(db: Database, token: str = Depends(APIKeyCookie(name="token"))) -> str:
     try:
         jwt_payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
