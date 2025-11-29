@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError, NoResultFound
 from ulid import ULID
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException,  Query, Response
 from fastapi.security import APIKeyCookie
-from sqlmodel import Field,  Session, SQLModel, create_engine, CHAR, func, text, select, Relationship
+from sqlmodel import Field,  Session, SQLModel, create_engine, CHAR, func, or_, text, select, Relationship
 from pydantic import BaseModel, EmailStr, model_validator
 from argon2 import PasswordHasher, exceptions
 from socketio import AsyncServer, ASGIApp # type: ignore
@@ -246,7 +246,7 @@ def create_server(name: Annotated[str, Query(min_length=1, max_length=SERVER_LEN
 
 @v1.get("/server")
 def get_servers(db: Database, user_id: AuthUser) -> Sequence[Server]:
-    return db.exec(select(Server).where(Server.owner_id == user_id)).all()
+    return db.exec(select(Server).join(Server_Member, isouter=True).where(or_(Server.owner_id == user_id, Server_Member.member_id == user_id)).distinct()).all()
 
 @v1.delete("/server")
 async def delete_server(server_id: str, db: Database, user_id: AuthUser) -> Response:
