@@ -192,17 +192,12 @@ async def disconnect(sid):
 # FastAPI paths
 @app.on_event("startup")
 def on_startup():
-    # await broadcast.connect()
     SQLModel.metadata.create_all(engine)
-    with engine.connect() as db:  # running this for sqlite
-        queries = ["PRAGMA foreign_keys=ON"]
+    with engine.connect() as db:
+        queries = ["PRAGMA foreign_keys=ON"] # running this for sqlite
         # queries.extend(["PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL"])
         for query in queries:
             db.execute(text(query))
-
-# @app.on_event("shutdown")
-# async def on_shutdown():
-    # pass
 
 v1 = APIRouter(prefix="/api/v1")
 
