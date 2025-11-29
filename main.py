@@ -259,7 +259,7 @@ async def delete_server(server_id: str, db: Database, user_id: AuthUser) -> Resp
     return Response(status_code=202)
 
 @v1.post("/channel")
-async def create_channel(server_id: str, name: Annotated[str, Query(min_length=1, max_length=CHANNEL_LENGTH)], db: Database, user_id: IsServerOwner):
+async def create_channel(server_id: str, name: Annotated[str, Query(min_length=1, max_length=CHANNEL_LENGTH)], db: Database, user_id: IsServerOwner) -> Response:
     channel = Channel(id=gen_id(), server_id=server_id, name=name)
     db.add(channel)
     db.commit()
@@ -271,7 +271,7 @@ def get_channels(server_id: str, db: Database, user_id: IsServerMember) -> Seque
     return db.exec(select(Channel).where(Channel.server_id == server_id)).all()
 
 @v1.delete("/channel")
-def delete_channel(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner):
+def delete_channel(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner) -> Response:
     channel = db.exec(select(Channel).where(Channel.id == channel_id and Channel.server_id == server_id)).one()
     if not channel:
         raise HTTPException(404)
@@ -281,7 +281,7 @@ def delete_channel(server_id: str, channel_id: str, db: Database, user_id: IsSer
     return Response(status_code=202)
 
 @v1.post("/message")
-async def create_message(req: MessageCreateRequest, channel_id: str, db: Database, user_id: IsServerMember):
+async def create_message(req: MessageCreateRequest, channel_id: str, db: Database, user_id: IsServerMember) -> Response:
     message = Message(id=gen_id(), sender_id=user_id, channel_id=channel_id, message=req.message)
     db.add(message)
     db.commit()
