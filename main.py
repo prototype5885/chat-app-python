@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Self, Sequence
 from sqlalchemy.exc import IntegrityError, NoResultFound
 from ulid import ULID
-from fastapi import Depends, FastAPI, Form, HTTPException,  Query, Response
+from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException,  Query, Response
 from fastapi.security import APIKeyCookie
 from sqlmodel import Field,  Session, SQLModel, create_engine, CHAR, func, text, select, Relationship
 from pydantic import BaseModel, EmailStr, model_validator
@@ -200,7 +200,9 @@ def on_startup():
 # async def on_shutdown():
     # pass
 
-@app.post("/api/user/register")
+v1 = APIRouter(prefix="/api/v1")
+
+@v1.post("/user/register")
 def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database) -> Response:
     try:
         db.add(User(id=gen_id(), email=req.email, username=req.user_name, password=password_hasher.hash(req.password)))
@@ -209,7 +211,7 @@ def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database) -> 
         raise HTTPException(409, "email or username already exists")
     return Response(status_code=201)
 
-@app.post("/api/user/login")
+@v1.post("/user/login")
 def login_user(req: Annotated[UserLoginRequest, Form()], db: Database) -> Response:
     user = db.exec(select(User).where(User.email == req.email)).one()
     if not user:
@@ -229,25 +231,25 @@ def login_user(req: Annotated[UserLoginRequest, Form()], db: Database) -> Respon
     return response
 
 
-@app.get("/api/test")
+@v1.get("/test")
 def test():
     return "Hello world!"
 
-@app.get("/api/test_auth")
+@v1.get("/test_auth")
 def test_auth(user_id: AuthUser):
     return user_id
 
-@app.post("/api/server")
+@v1.post("/server")
 def create_server(name: Annotated[str, Query(min_length=1, max_length=SERVER_LENGTH)], db: Database, user_id: AuthUser) -> Response:
     db.add(Server(id=gen_id(), owner_id=user_id, name=name))
     db.commit()
     return Response(status_code=201)
 
-@app.get("/api/server")
+@v1.get("/server")
 def get_servers(db: Database, user_id: AuthUser) -> Sequence[Server]:
     return db.exec(select(Server).where(Server.owner_id == user_id)).all()
 
-@app.delete("/api/server")
+@v1.delete("/server")
 async def delete_server(server_id: str, db: Database, user_id: AuthUser) -> Response:
     server = db.exec(select(Server).where(Server.id == server_id and Server.owner_id == user_id)).one()
     if not server:
@@ -257,7 +259,7 @@ async def delete_server(server_id: str, db: Database, user_id: AuthUser) -> Resp
     
     return Response(status_code=202)
 
-@app.post("/api/channel")
+@v1.post("/channel")
 async def create_channel(server_id: str, name: Annotated[str, Query(min_length=1, max_length=CHANNEL_LENGTH)], db: Database, user_id: IsServerOwner):
     channel = Channel(id=gen_id(), server_id=server_id, name=name)
     db.add(channel)
@@ -265,11 +267,11 @@ async def create_channel(server_id: str, name: Annotated[str, Query(min_length=1
 
     return Response(status_code=202)
 
-@app.get("/api/channel")
+@v1.get("/channel")
 def get_channels(server_id: str, db: Database, user_id: IsServerMember) -> Sequence[Channel]:
     return db.exec(select(Channel).where(Channel.server_id == server_id)).all()
 
-@app.delete("/api/channel")
+@v1.delete("/channel")
 def delete_channel(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner):
     channel = db.exec(select(Channel).where(Channel.id == channel_id and Channel.server_id == server_id)).one()
     if not channel:
@@ -279,7 +281,7 @@ def delete_channel(server_id: str, channel_id: str, db: Database, user_id: IsSer
 
     return Response(status_code=202)
 
-@app.post("/api/message")
+@v1.post("/message")
 async def create_message(req: MessageCreateRequest, channel_id: str, db: Database, user_id: IsServerMember):
     message = Message(id=gen_id(), sender_id=user_id, channel_id=channel_id, message=req.message)
     db.add(message)
@@ -291,7 +293,7 @@ async def create_message(req: MessageCreateRequest, channel_id: str, db: Databas
     await sio.emit(f"message_created:{channel_id}", {**message.model_dump(), "display_name": display_name, "picture": picture})
     return Response(status_code=202)
 
-@app.get("/api/message")
+@v1.get("/message")
 def get_messages(channel_id: str, db: Database, user_id: IsServerMember):
     results = db.exec(select(Message, User.display_name, User.picture).join(User).where(Message.channel_id == channel_id)).all()
     if results == None:
@@ -304,7 +306,7 @@ def get_messages(channel_id: str, db: Database, user_id: IsServerMember):
         
     return messages
     
-@app.delete("/api/message")
+@v1.delete("/message")
 def delete_message(message_id: str, db: Database, user_id: AuthUser) -> Response:
     message = db.exec(select(Message).where(Message.id == message_id and Message.sender_id == user_id)).one()
     if not message:
@@ -313,3 +315,5 @@ def delete_message(message_id: str, db: Database, user_id: AuthUser) -> Response
     db.commit()
 
     return Response(status_code=202)
+
+app.include_router(v1)
