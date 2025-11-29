@@ -129,7 +129,6 @@ class MessageCreateRequest(BaseModel):
 def get_session():
     with Session(engine) as session:
         yield session
-Database = Annotated[Session, Depends(get_session)]
 
 def auth_user(db: Database, token: str = Depends(APIKeyCookie(name="token"))) -> str:
     try:
@@ -144,26 +143,28 @@ def auth_user(db: Database, token: str = Depends(APIKeyCookie(name="token"))) ->
         raise HTTPException(401, "user is banned")
 
     return user_id
-AuthUser = Annotated[str, Depends(auth_user)]
 
 def is_server_owner(db: Database, server_id: str, user_id: AuthUser) -> str:
-    owner_id = db.exec(select(Server.owner_id).where(Server.id == server_id and Server.owner_id == user_id)).one()
-    if not user_id:
-        raise HTTPException(401, "not server owner")
-    
+    owner_id = db.exec(select(Server.owner_id).where(Server.id == server_id and Server.owner_id == user_id)).one_or_none()
+    if not owner_id:
+        raise HTTPException(401, f"not owner of server ID {server_id}")
+
     return user_id
-IsServerOwner = Annotated[str, Depends(is_server_owner)]
 
 def is_server_member(db: Database, server_id: str, user_id: AuthUser) -> str:
-    result = db.exec(select(Server_Member.member_id).where(Server_Member.server_id == server_id and Server_Member.member_id == user_id)).one()
-    if not result:
+    member_id = db.exec(select(Server_Member.member_id).where(Server_Member.server_id == server_id and Server_Member.member_id == user_id)).one_or_none()
+    if not member_id:
         raise HTTPException(401, f"not member of server ID {server_id}")
     
     return user_id
-IsServerMember = Annotated[str, Depends(is_server_member)]
 
 def is_in_permitted_role(db: Database, channel_id: str, user_id: AuthUser) -> str:
     return user_id
+
+Database = Annotated[Session, Depends(get_session)]
+AuthUser = Annotated[str, Depends(auth_user)]
+IsServerOwner = Annotated[str, Depends(is_server_owner)]
+IsServerMember = Annotated[str, Depends(is_server_member)]
 IsInPermittedRole = Annotated[str, Depends(is_in_permitted_role)]
 
 # socket.io
@@ -199,7 +200,7 @@ def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database) -> 
         db.add(User(id=gen_id(), email=req.email, username=req.user_name, password=password_hasher.hash(req.password)))
         db.commit()
     except IntegrityError:
-        raise HTTPException(409, "email or user already exists")
+        raise HTTPException(409, "email or username already exists")
     return Response(status_code=201)
 
 @app.post("/api/user/login")
