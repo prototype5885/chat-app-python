@@ -4,7 +4,7 @@ import secrets
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Self, Sequence
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, NoResultFound
 from ulid import ULID
 from fastapi import Depends, FastAPI, Form, HTTPException,  Query, Response
 from fastapi.security import APIKeyCookie
@@ -134,11 +134,17 @@ def auth_user(db: Database, token: str = Depends(APIKeyCookie(name="token"))) ->
     try:
         jwt_payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
     except:
-        raise HTTPException(401, "error decoding token")
+        raise HTTPException(401, "error decoding jwt")
+    
+    user_id = jwt_payload.get("user_id")
+    if not isinstance(user_id, str):
+        raise HTTPException(401, "error getting user_id from jwt")
 
-    user_id, banned = db.exec(select(User.id, User.banned).where(User.id == jwt_payload.get("user_id"))).one()
-    if not user_id:
+    try:
+        banned = db.exec(select(User.banned).where(User.id == user_id)).one()
+    except NoResultFound:
         raise HTTPException(401, "user doesn't exist")
+    
     if banned:
         raise HTTPException(401, "user is banned")
 
