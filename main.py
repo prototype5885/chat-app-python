@@ -162,10 +162,12 @@ def is_server_owner(db: Database, server_id: str, user_id: AuthUser) -> str:
     return user_id
 
 def is_server_member(db: Database, server_id: str, user_id: AuthUser) -> str:
-    member_id = db.exec(select(Server_Member.member_id).where(Server_Member.server_id == server_id and Server_Member.member_id == user_id)).one_or_none()
-    if not member_id:
-        raise HTTPException(401, f"not member of server ID {server_id}")
-    
+    result = db.exec(select(Server.owner_id, Server_Member.member_id).where(Server.id == server_id)
+                    .join(Server_Member, isouter=True)
+                    .where(or_(Server.owner_id == user_id,Server_Member.member_id == user_id))
+                    .distinct()).one_or_none()
+    if not result:
+        raise HTTPException(401, f"not member or owner of server ID {server_id}")
     return user_id
 
 def is_in_permitted_role(db: Database, channel_id: str, user_id: AuthUser) -> str:
