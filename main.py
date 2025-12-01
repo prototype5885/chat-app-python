@@ -182,7 +182,7 @@ IsInPermittedRole = Annotated[str, Depends(is_in_permitted_role)]
 # socket.io
 sio = AsyncServer(cors_allowed_origins='*',async_mode='asgi')
 socket_app = ASGIApp(sio)
-app.mount("/sio", socket_app)
+app.mount("/socket.io", socket_app)
 
 @sio.on("connect") # type: ignore
 async def connect(sid, env):
