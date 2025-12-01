@@ -3,7 +3,7 @@ import jwt
 import secrets
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Self, Sequence
+from typing import Annotated, Literal, Self, Sequence
 from sqlalchemy.exc import IntegrityError, NoResultFound
 from ulid import ULID
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException,  Query, Response
@@ -12,7 +12,11 @@ from sqlmodel import Field,  Session, SQLModel, create_engine, CHAR, func, or_, 
 from pydantic import BaseModel, EmailStr, model_validator
 from argon2 import PasswordHasher, exceptions
 from socketio import AsyncServer, ASGIApp # type: ignore
+import logging
 # from cachetools import TTLCache, cached
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.DEBUG)
 
 USER_LENGTH = 32
 SERVER_LENGTH = 64
@@ -21,6 +25,9 @@ MESSAGE_LENGTH = 4096
 
 ULID_LENGTH = 26
 ULID_TYPE = CHAR(ULID_LENGTH) # ULID will be always 26 char
+
+RoomType = Literal["server", "channel"]
+EventType = Literal["new_message"]
 
 load_dotenv()
 if not os.getenv("JWT_SECRET"):
@@ -36,6 +43,12 @@ engine = create_engine("sqlite:///database.db", connect_args={"check_same_thread
 app = FastAPI()
 password_hasher = PasswordHasher()
 
+# socket.io
+sio = AsyncServer(cors_allowed_origins='*',async_mode='asgi')
+socket_app = ASGIApp(socketio_server=sio, other_asgi_app=app)
+app.mount("/socket.io", socket_app)
+
+sio_client_list: dict[str, str] = {}
 
 def gen_id() -> str:
     ulid = str(ULID())
@@ -179,17 +192,42 @@ IsServerOwner = Annotated[str, Depends(is_server_owner)]
 IsServerMember = Annotated[str, Depends(is_server_member)]
 IsInPermittedRole = Annotated[str, Depends(is_in_permitted_role)]
 
-# socket.io
-sio = AsyncServer(cors_allowed_origins='*',async_mode='asgi')
-socket_app = ASGIApp(sio)
-app.mount("/socket.io", socket_app)
 
-@sio.on("connect") # type: ignore
+# macros
+async def enter_room(sid: str, room_type: RoomType, to_enter: str):
+    for room in sio.rooms(sid):
+        if room.startswith(room_type):
+            await sio.leave_room(sid, room)
+            logger.debug(f"sid: {sid} left room: {room}")
+            break
+
+    room = f"{room_type}:{to_enter}"
+    await sio.enter_room(sid, room)
+    logger.debug(f"sid: {sid} joined room: {room}")
+
+
+# socket.io paths
+@sio.event
 async def connect(sid, env):
-    print("New Client Connected to This id :"+" "+str(sid))
-@sio.on("disconnect") # type: ignore
-async def disconnect(sid):
-    print("Client Disconnected: "+" "+str(sid))
+    token: str = env["HTTP_COOKIE"].split('token=', 1)[1]
+    with Session(engine) as session:
+        try:
+            user_id = auth_user(session, env["HTTP_COOKIE"].split('token=', 1)[1])
+        except:
+            raise ConnectionRefusedError('authentication failed')
+        
+    sio_client_list[token] = sid
+    logger.debug(f"Socket connected: {sid} with token: {token}")
+
+@sio.event
+async def disconnect(sid, reason):
+    logger.debug(f"Client Disconnected: {sid}, reason: {reason}")
+    for key, value in list(sio_client_list.items()):
+        if value == sid:
+            del sio_client_list[key]
+            logger.debug(f"Deleted sid {value} from sio_client_list")
+            break
+
 
 # FastAPI paths
 @app.on_event("startup")
@@ -291,11 +329,14 @@ async def create_message(req: MessageCreateRequest, channel_id: str, db: Databas
 
     display_name, picture = db.exec(select(User.display_name, User.picture).where(User.id == user_id)).one()
 
-    await sio.emit(f"message_created:{channel_id}", {**message.model_dump(), "display_name": display_name, "picture": picture})
+    event: EventType = "new_message"
+    room = f"channel:{channel_id}"
+    await sio.emit(event, {**message.model_dump(), "display_name": display_name, "picture": picture}, room)
+    logger.debug(f"Emitted event: {event} to room: {room}")
     return Response(status_code=202)
 
 @v1.get("/message")
-def get_messages(channel_id: str, db: Database, user_id: IsServerMember):
+async def get_messages(channel_id: str, db: Database, user_id: IsServerMember, token: str = Depends(APIKeyCookie(name="token"))):
     results = db.exec(select(Message, User.display_name, User.picture).join(User).where(Message.channel_id == channel_id)).all()
     if results == None:
         raise HTTPException(404)
@@ -304,7 +345,9 @@ def get_messages(channel_id: str, db: Database, user_id: IsServerMember):
     for message, display_name, picture in results:
         message_data = {**message.__dict__, "display_name": display_name, "picture": picture}
         messages.append(message_data)
-        
+
+    await enter_room(sio_client_list[token], "channel", channel_id)
+
     return messages
     
 @v1.delete("/message")
