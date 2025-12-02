@@ -213,9 +213,9 @@ async def enter_room(sid: str, room_type: RoomType, to_enter: str):
 # socket.io paths
 @sio.event
 async def connect(sid, env):
-    token: str = env["HTTP_COOKIE"].split('token=', 1)[1]
     with Session(engine) as session:
         try:
+            token: str = env["HTTP_COOKIE"].split('token=', 1)[1]
             user_id = auth_user(session, env["HTTP_COOKIE"].split('token=', 1)[1])
         except:
             raise ConnectionRefusedError('authentication failed')
