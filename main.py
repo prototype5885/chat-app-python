@@ -273,6 +273,11 @@ def login_user(req: Annotated[UserLoginRequest, Form()], db: Database) -> Respon
     response.set_cookie(key="token", value=encoded_jwt, httponly=True, secure=True, samesite="lax", max_age=days * 24 * 3600)
     return response
 
+@v1.get("/user/logout")
+def logout_user() -> Response:
+    response = Response(status_code=303, headers={"Location": "/login"})
+    response.delete_cookie(key="token")
+    return response
 
 @v1.get("/test")
 def test():
