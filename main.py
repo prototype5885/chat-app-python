@@ -280,6 +280,11 @@ def test():
 def test_auth(user_id: AuthUser):
     return user_id
 
+@v1.get("/user")
+def get_user_info(db: Database, user_id: AuthUser):
+    display_name, picture = db.exec(select(User.display_name, User.picture).where(User.id == user_id)).one()
+    return {"id": user_id, "display_name": display_name, "picture": picture}
+
 @v1.post("/server")
 def create_server(name: Annotated[str, Query(min_length=1, max_length=SERVER_LENGTH)], db: Database, user_id: AuthUser) -> Server:
     server = Server(id=gen_id(), owner_id=user_id, name=name)
