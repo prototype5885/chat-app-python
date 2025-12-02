@@ -4,3 +4,4 @@
 *.db-wal
 .venv
 __pycache__
+dist

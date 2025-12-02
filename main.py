@@ -1,4 +1,6 @@
 import os
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 import jwt
 import secrets
 from dotenv import load_dotenv
@@ -6,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal, Self, Sequence
 from sqlalchemy.exc import IntegrityError, NoResultFound
 from ulid import ULID
-from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException,  Query, Response
+from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException,  Query, Request, Response
 from fastapi.security import APIKeyCookie
 from sqlmodel import Field,  Session, SQLModel, create_engine, CHAR, func, or_, text, select, Relationship
 from pydantic import BaseModel, EmailStr, model_validator
@@ -250,7 +252,7 @@ def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database) -> 
         db.commit()
     except IntegrityError:
         raise HTTPException(409, "email or username already exists")
-    return Response(status_code=201)
+    return Response(status_code=303, headers={"Location": "/login"})
 
 @v1.post("/user/login")
 def login_user(req: Annotated[UserLoginRequest, Form()], db: Database) -> Response:
@@ -267,7 +269,7 @@ def login_user(req: Annotated[UserLoginRequest, Form()], db: Database) -> Respon
     expires = datetime.now(timezone.utc) + timedelta(days=days)
     encoded_jwt = jwt.encode({"user_id": str(user.id), "exp": expires}, JWT_SECRET, algorithm="HS256")
 
-    response = Response(status_code=200)
+    response = Response(status_code=303, headers={"Location": "/"})
     response.set_cookie(key="token", value=encoded_jwt, httponly=True, secure=True, samesite="lax", max_age=days * 24 * 3600)
     return response
 
@@ -373,3 +375,19 @@ async def delete_message(message_id: str, db: Database, user_id: AuthUser) -> Re
     return Response(status_code=202)
 
 app.include_router(v1)
+
+@app.get("/login")
+def login_page():
+    return FileResponse("./static/login.html")
+
+@app.get("/register")
+def register_page():
+    return FileResponse("./static/register.html")
+
+app.mount("/", StaticFiles(directory="dist", html=True))
+
+@app.exception_handler(404)
+def not_found(request: Request, exc):
+    response = FileResponse("./static/404.html")
+    response.status_code = 404
+    return response
