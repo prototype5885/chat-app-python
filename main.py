@@ -389,7 +389,8 @@ def login_page():
 def register_page():
     return FileResponse("./static/register.html")
 
-app.mount("/", StaticFiles(directory="dist", html=True))
+if os.path.exists("./dist"):
+    app.mount("/", StaticFiles(directory="dist", html=True))
 
 @app.exception_handler(404)
 def not_found(request: Request, exc):
