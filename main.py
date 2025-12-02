@@ -27,7 +27,6 @@ ULID_LENGTH = 26
 ULID_TYPE = CHAR(ULID_LENGTH) # ULID will be always 26 char
 
 RoomType = Literal["server", "channel"]
-EventType = Literal["new_message"]
 
 load_dotenv()
 if not os.getenv("JWT_SECRET"):
@@ -194,6 +193,9 @@ IsInPermittedRole = Annotated[str, Depends(is_in_permitted_role)]
 
 
 # macros
+def room_path(room_type: RoomType, id: str):
+    return f"{room_type}:{id}"
+
 async def enter_room(sid: str, room_type: RoomType, to_enter: str):
     for room in sio.rooms(sid):
         if room.startswith(room_type):
@@ -201,7 +203,7 @@ async def enter_room(sid: str, room_type: RoomType, to_enter: str):
             logger.debug(f"sid: {sid} left room: {room}")
             break
 
-    room = f"{room_type}:{to_enter}"
+    room = room_path(room_type, to_enter)
     await sio.enter_room(sid, room)
     logger.debug(f"sid: {sid} joined room: {room}")
 
@@ -252,7 +254,7 @@ def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database) -> 
 
 @v1.post("/user/login")
 def login_user(req: Annotated[UserLoginRequest, Form()], db: Database) -> Response:
-    user = db.exec(select(User).where(User.email == req.email)).one()
+    user = db.exec(select(User).where(User.email == req.email)).one_or_none()
     if not user:
         raise HTTPException(401, "email not found")
     
@@ -290,12 +292,13 @@ def get_servers(db: Database, user_id: AuthUser) -> Sequence[Server]:
 
 @v1.delete("/server")
 async def delete_server(server_id: str, db: Database, user_id: AuthUser) -> Response:
-    server = db.exec(select(Server).where(Server.id == server_id and Server.owner_id == user_id)).one()
+    server = db.exec(select(Server).where(Server.id == server_id and Server.owner_id == user_id)).one_or_none()
     if not server:
         raise HTTPException(404)
     db.delete(server)
     db.commit()
     
+    await sio.emit("delete_server", server_id, room_path("server", server_id))
     return Response(status_code=202)
 
 @v1.post("/channel")
@@ -303,21 +306,26 @@ async def create_channel(server_id: str, name: Annotated[str, Query(min_length=1
     channel = Channel(id=gen_id(), server_id=server_id, name=name)
     db.add(channel)
     db.commit()
+    db.refresh(channel)
 
+    await sio.emit("create_channel", channel.model_dump(), room_path("server", server_id))
     return Response(status_code=202)
 
 @v1.get("/channel")
-def get_channels(server_id: str, db: Database, user_id: IsServerMember) -> Sequence[Channel]:
-    return db.exec(select(Channel).where(Channel.server_id == server_id)).all()
+async def get_channels(server_id: str, db: Database, user_id: IsServerMember, token: str = Depends(APIKeyCookie(name="token"))) -> Sequence[Channel]:
+    channels = db.exec(select(Channel).where(Channel.server_id == server_id)).all()
+    await enter_room(sio_client_list[token], "server", server_id)
+    return channels
 
 @v1.delete("/channel")
-def delete_channel(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner) -> Response:
-    channel = db.exec(select(Channel).where(Channel.id == channel_id and Channel.server_id == server_id)).one()
+async def delete_channel(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner) -> Response:
+    channel = db.exec(select(Channel).where(Channel.id == channel_id and Channel.server_id == server_id)).one_or_none()
     if not channel:
         raise HTTPException(404)
     db.delete(channel)
     db.commit()
 
+    await sio.emit("delete_channel", channel_id, room_path("server", server_id))
     return Response(status_code=202)
 
 @v1.post("/message")
@@ -329,10 +337,7 @@ async def create_message(req: MessageCreateRequest, channel_id: str, db: Databas
 
     display_name, picture = db.exec(select(User.display_name, User.picture).where(User.id == user_id)).one()
 
-    event: EventType = "new_message"
-    room = f"channel:{channel_id}"
-    await sio.emit(event, {**message.model_dump(), "display_name": display_name, "picture": picture}, room)
-    logger.debug(f"Emitted event: {event} to room: {room}")
+    await sio.emit("create_message", {**message.model_dump(), "display_name": display_name, "picture": picture}, room_path("channel", channel_id))
     return Response(status_code=202)
 
 @v1.get("/message")
@@ -347,17 +352,17 @@ async def get_messages(channel_id: str, db: Database, user_id: IsServerMember, t
         messages.append(message_data)
 
     await enter_room(sio_client_list[token], "channel", channel_id)
-
     return messages
     
 @v1.delete("/message")
-def delete_message(message_id: str, db: Database, user_id: AuthUser) -> Response:
-    message = db.exec(select(Message).where(Message.id == message_id and Message.sender_id == user_id)).one()
+async def delete_message(message_id: str, db: Database, user_id: AuthUser) -> Response:
+    message = db.exec(select(Message).where(Message.id == message_id and Message.sender_id == user_id)).one_or_none()
     if not message:
         raise HTTPException(404)
     db.delete(message)
     db.commit()
 
+    await sio.emit("delete_message", message.id, room_path("channel", message.channel_id))
     return Response(status_code=202)
 
 app.include_router(v1)
