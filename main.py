@@ -281,10 +281,12 @@ def test_auth(user_id: AuthUser):
     return user_id
 
 @v1.post("/server")
-def create_server(name: Annotated[str, Query(min_length=1, max_length=SERVER_LENGTH)], db: Database, user_id: AuthUser) -> Response:
-    db.add(Server(id=gen_id(), owner_id=user_id, name=name))
+def create_server(name: Annotated[str, Query(min_length=1, max_length=SERVER_LENGTH)], db: Database, user_id: AuthUser) -> Server:
+    server = Server(id=gen_id(), owner_id=user_id, name=name)
+    db.add(server)
     db.commit()
-    return Response(status_code=201)
+    db.refresh(server)
+    return server
 
 @v1.get("/server")
 def get_servers(db: Database, user_id: AuthUser) -> Sequence[Server]:
