@@ -36,7 +36,7 @@ else:
     JWT_SECRET = os.environ["JWT_SECRET"]
     print("Loaded JWT_SECRET from .env")
 
-engine = create_engine("sqlite:///database.db", connect_args={"check_same_thread": False})
+engine = create_engine("sqlite:///database.db", connect_args={"check_same_thread": False}, echo=True)
 app = FastAPI()
 password_hasher = PasswordHasher()
 
