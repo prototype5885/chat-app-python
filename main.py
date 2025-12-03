@@ -5,7 +5,7 @@ import jwt
 import secrets
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Literal, Self, Sequence
+from typing import Annotated, Any, Dict, Literal, Self, Sequence
 from sqlalchemy.exc import IntegrityError, NoResultFound
 from ulid import ULID
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request, Response
@@ -15,16 +15,6 @@ from pydantic import BaseModel, EmailStr, model_validator
 from argon2 import PasswordHasher, exceptions
 from socketio import AsyncServer, ASGIApp # type: ignore
 # from cachetools import TTLCache, cached
-
-USER_LENGTH = 32
-SERVER_LENGTH = 64
-CHANNEL_LENGTH = 32
-MESSAGE_LENGTH = 4096
-
-ULID_LENGTH = 26
-ULID_TYPE = CHAR(ULID_LENGTH) # ULID will be always 26 char
-
-RoomType = Literal["server", "channel"]
 
 load_dotenv()
 if not os.getenv("JWT_SECRET"):
@@ -47,12 +37,6 @@ app.mount("/socket.io", socket_app)
 
 sio_client_list: dict[str, str] = {}
 
-def gen_id() -> str:
-    ulid = str(ULID())
-    if len(ulid) != ULID_LENGTH:
-        raise Exception(f"generated ULID {ulid} should contain exactly {ULID_LENGTH} characters, but is {len(ulid)}")
-    return ulid
-
 # ttl_cache = TTLCache(maxsize=1024, ttl=900)
    
 
@@ -69,14 +53,37 @@ def gen_id() -> str:
 #     def process_result_value(self, value, dialect: Dialect) -> ULID:
 #         return ULID.from_str(value)
 
+# types
+ULID_LENGTH = 26
+ULID_TYPE = CHAR(ULID_LENGTH) # ULID will be always 26 char
+
+# literals
+RoomType = Literal["server", "channel"]
+
+# lengths of fields
+class Length:
+    def __init__(self, min: int, max: int):
+        self.min = min
+        self.max = max
+
+    def __call__(self) -> Dict[str, Any]:
+        return {"min_length": self.min, "max_length": self.max}
+
+USERNAME_LEN = Length(6, 32)
+DISPLAY_NAME_LEN = Length(1, 64)
+PASSWORD_LEN = Length(6, 1024)
+SERVER_NAME_LEN = Length(1, 64)
+CHANNEL_NAME_LEN = Length(1, 32)
+MESSAGE_LEN = Length(1, 4096)
+
 # models:
 class User(SQLModel, table=True):
     id: str = Field(primary_key=True, sa_type=ULID_TYPE)
-    username: str = Field(index=True, unique=True)
+    username: str = Field(index=True, unique=True, **USERNAME_LEN())
     email: str = Field(index=True, unique=True)
-    display_name: str | None = Field(default=None)
+    display_name: str = Field(default=None, **DISPLAY_NAME_LEN())
     picture: str | None = Field(default=None)
-    password: str = Field()
+    password: str
     banned: bool = Field(default=False)
 
     servers: list["Server"] = Relationship(back_populates="user", cascade_delete=True)
@@ -85,7 +92,7 @@ class User(SQLModel, table=True):
 class Server(SQLModel, table=True):
     id: str = Field(primary_key=True, sa_type=ULID_TYPE)
     owner_id: str = Field(foreign_key="user.id", ondelete="CASCADE", sa_type=ULID_TYPE)
-    name: str = Field(max_length=SERVER_LENGTH)
+    name: str = Field(**SERVER_NAME_LEN())
     picture: str | None = Field(default=None)
     roles: str | None = Field(default=None)
 
@@ -95,7 +102,7 @@ class Server(SQLModel, table=True):
 class Channel(SQLModel, table=True):
     id: str = Field(primary_key=True, sa_type=ULID_TYPE)
     server_id: str = Field(foreign_key="server.id", ondelete="CASCADE", sa_type=ULID_TYPE)
-    name: str = Field(max_length=CHANNEL_LENGTH)
+    name: str = Field(**CHANNEL_NAME_LEN())
     # private: bool = Field(default=False)
     # allowed_roles: str | None = Field(default=None)
     # allowed_users: str | None = Field(default=None)
@@ -107,7 +114,7 @@ class Message(SQLModel, table=True):
     id: str = Field(primary_key=True, sa_type=ULID_TYPE)
     sender_id: str = Field(foreign_key="user.id", ondelete="CASCADE", sa_type=ULID_TYPE)
     channel_id: str = Field(foreign_key="channel.id", ondelete="CASCADE", sa_type=ULID_TYPE)
-    message: str = Field(max_length=MESSAGE_LENGTH)
+    message: str = Field(**MESSAGE_LEN())
 
     channel: Channel = Relationship(back_populates="messages")
     user: User = Relationship(back_populates="messages")
@@ -119,10 +126,10 @@ class Server_Member(SQLModel, table=True):
 
 # DTOs:
 class UserRegisterRequest(BaseModel):
-    user_name: str = Field(min_length=6, max_length=USER_LENGTH)
+    user_name: str = Field(**USERNAME_LEN())
     email: EmailStr
-    password: str = Field(min_length=6, max_length=1024)
-    password_repeat: str = Field(min_length=6, max_length=1024)
+    password: str = Field(**PASSWORD_LEN())
+    password_repeat: str = Field(**PASSWORD_LEN())
 
     @model_validator(mode="after")
     def check_passwords_match(self) -> Self:
@@ -131,14 +138,14 @@ class UserRegisterRequest(BaseModel):
         return self
 
 class UserLoginRequest(BaseModel):
-    email: str
-    password: str
+    email: EmailStr
+    password: str = Field(**PASSWORD_LEN())
 
 class MessageCreateRequest(BaseModel):
-    message: str = Field(max_length=MESSAGE_LENGTH)
+    message: str = Field(**MESSAGE_LEN())
 
 class UserUpdateRequest(BaseModel):
-    display_name: str
+    display_name: str = Field(**DISPLAY_NAME_LEN())
 
 # middlewares:
 def get_session():
@@ -207,6 +214,12 @@ async def enter_room(sid: str, room_type: RoomType, to_enter: str):
     await sio.enter_room(sid, room)
     print(f"sid: {sid} joined room: {room}")
 
+def gen_id() -> str:
+    ulid = str(ULID())
+    if len(ulid) != ULID_LENGTH:
+        raise Exception(f"generated ULID {ulid} should contain exactly {ULID_LENGTH} characters, but is {len(ulid)}")
+    return ulid
+
 
 # socket.io paths
 @sio.event
@@ -246,7 +259,7 @@ v1 = APIRouter(prefix="/api/v1")
 @v1.post("/user/register")
 def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database) -> Response:
     try:
-        db.add(User(id=gen_id(), email=req.email, username=req.user_name, password=password_hasher.hash(req.password)))
+        db.add(User(id=gen_id(), email=req.email, username=req.user_name, display_name=req.user_name, password=password_hasher.hash(req.password)))
         db.commit()
     except IntegrityError:
         raise HTTPException(409, "email or username already exists")
@@ -298,7 +311,7 @@ def update_user_info(req: Annotated[UserUpdateRequest, Form()], db: Database, us
     return values
 
 @v1.post("/server")
-def create_server(name: Annotated[str, Query(min_length=1, max_length=SERVER_LENGTH)], db: Database, user_id: AuthUser) -> Server:
+def create_server(name: Annotated[str, Query(**SERVER_NAME_LEN())], db: Database, user_id: AuthUser) -> Server:
     server = Server(id=gen_id(), owner_id=user_id, name=name)
     db.add(server)
     db.commit()
@@ -321,7 +334,7 @@ async def delete_server(server_id: str, db: Database, user_id: AuthUser) -> Resp
     return Response(status_code=202)
 
 @v1.post("/channel")
-async def create_channel(server_id: str, name: Annotated[str, Query(min_length=1, max_length=CHANNEL_LENGTH)], db: Database, user_id: IsServerOwner) -> Response:
+async def create_channel(server_id: str, name: Annotated[str, Query(**CHANNEL_NAME_LEN())], db: Database, user_id: IsServerOwner) -> Response:
     channel = Channel(id=gen_id(), server_id=server_id, name=name)
     db.add(channel)
     db.commit()
