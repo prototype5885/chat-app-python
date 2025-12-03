@@ -1,0 +1,15 @@
+[project]
+name = "chat-app-python"
+version = "0.1.0"
+description = ""
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "argon2-cffi>=25.1.0",
+    "fastapi[standard]>=0.123.5",
+    "pyjwt>=2.10.1",
+    "python-dotenv>=1.2.1",
+    "python-socketio>=5.15.0",
+    "python-ulid>=3.1.0",
+    "sqlmodel>=0.0.27",
+]
