@@ -14,11 +14,7 @@ from sqlmodel import Field,  Session, SQLModel, create_engine, CHAR, func, or_, 
 from pydantic import BaseModel, EmailStr, model_validator
 from argon2 import PasswordHasher, exceptions
 from socketio import AsyncServer, ASGIApp # type: ignore
-import logging
 # from cachetools import TTLCache, cached
-
-logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.DEBUG)
 
 USER_LENGTH = 32
 SERVER_LENGTH = 64
@@ -202,12 +198,12 @@ async def enter_room(sid: str, room_type: RoomType, to_enter: str):
     for room in sio.rooms(sid):
         if room.startswith(room_type):
             await sio.leave_room(sid, room)
-            logger.debug(f"sid: {sid} left room: {room}")
+            print(f"sid: {sid} left room: {room}")
             break
 
     room = room_path(room_type, to_enter)
     await sio.enter_room(sid, room)
-    logger.debug(f"sid: {sid} joined room: {room}")
+    print(f"sid: {sid} joined room: {room}")
 
 
 # socket.io paths
@@ -221,15 +217,15 @@ async def connect(sid, env):
             raise ConnectionRefusedError('authentication failed')
         
     sio_client_list[token] = sid
-    logger.debug(f"Socket connected: {sid} with token: {token}")
+    print(f"Socket connected: {sid} with token: {token}")
 
 @sio.event
 async def disconnect(sid, reason):
-    logger.debug(f"Client Disconnected: {sid}, reason: {reason}")
+    print(f"Client Disconnected: {sid}, reason: {reason}")
     for key, value in list(sio_client_list.items()):
         if value == sid:
             del sio_client_list[key]
-            logger.debug(f"Deleted sid {value} from sio_client_list")
+            print(f"Deleted sid {value} from sio_client_list")
             break
 
 
