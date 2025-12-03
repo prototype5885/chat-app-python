@@ -336,11 +336,11 @@ async def delete_server(server_id: str, db: Database, user_id: AuthUser) -> Resp
 @v1.post("/channel")
 async def create_channel(server_id: str, name: Annotated[str, Query(**CHANNEL_NAME_LEN())], db: Database, user_id: IsServerOwner) -> Response:
     channel = Channel(id=gen_id(), server_id=server_id, name=name)
+    channel_dict = channel.model_dump()
     db.add(channel)
     db.commit()
-    db.refresh(channel)
 
-    await sio.emit("create_channel", channel.model_dump(), room_path("server", server_id))
+    await sio.emit("create_channel", channel_dict, room_path("server", server_id))
     return Response(status_code=202)
 
 @v1.get("/channel")
@@ -363,13 +363,13 @@ async def delete_channel(server_id: str, channel_id: str, db: Database, user_id:
 @v1.post("/message")
 async def create_message(req: MessageCreateRequest, channel_id: str, db: Database, user_id: IsServerMember) -> Response:
     message = Message(id=gen_id(), sender_id=user_id, channel_id=channel_id, message=req.message)
+    message_dict = message.model_dump()
     db.add(message)
     db.commit()
-    db.refresh(message)
 
     display_name, picture = db.exec(select(User.display_name, User.picture).where(User.id == user_id)).one()
 
-    await sio.emit("create_message", {**message.model_dump(), "display_name": display_name, "picture": picture}, room_path("channel", channel_id))
+    await sio.emit("create_message", {**message_dict, "display_name": display_name, "picture": picture}, room_path("channel", channel_id))
     return Response(status_code=202)
 
 @v1.get("/message")
