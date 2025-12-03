@@ -8,9 +8,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal, Self, Sequence
 from sqlalchemy.exc import IntegrityError, NoResultFound
 from ulid import ULID
-from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException,  Query, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.security import APIKeyCookie
-from sqlmodel import Field,  Session, SQLModel, create_engine, CHAR, func, or_, text, select, Relationship
+from sqlmodel import Field,  Session, SQLModel, create_engine, CHAR, func, or_, text, select, update, Relationship
 from pydantic import BaseModel, EmailStr, model_validator
 from argon2 import PasswordHasher, exceptions
 from socketio import AsyncServer, ASGIApp # type: ignore
@@ -137,6 +137,8 @@ class UserLoginRequest(BaseModel):
 class MessageCreateRequest(BaseModel):
     message: str = Field(max_length=MESSAGE_LENGTH)
 
+class UserUpdateRequest(BaseModel):
+    display_name: str
 
 # middlewares:
 def get_session():
@@ -287,6 +289,13 @@ def test_auth(user_id: AuthUser):
 def get_user_info(db: Database, user_id: AuthUser):
     display_name, picture = db.exec(select(User.display_name, User.picture).where(User.id == user_id)).one()
     return {"id": user_id, "display_name": display_name, "picture": picture}
+
+@v1.post("/user")
+def update_user_info(req: Annotated[UserUpdateRequest, Form()], db: Database, user_id: AuthUser):
+    values = req.model_dump()
+    db.exec(update(User).where(User.id == user_id).values(values)) # pyright: ignore[reportArgumentType]
+    db.commit()
+    return values
 
 @v1.post("/server")
 def create_server(name: Annotated[str, Query(min_length=1, max_length=SERVER_LENGTH)], db: Database, user_id: AuthUser) -> Server:
