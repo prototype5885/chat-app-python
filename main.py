@@ -126,7 +126,7 @@ class Server_Member(SQLModel, table=True):
 
 # DTOs:
 class UserRegisterRequest(BaseModel):
-    user_name: str = Field(**USERNAME_LEN())
+    username: str = Field(**USERNAME_LEN())
     email: EmailStr
     password: str = Field(**PASSWORD_LEN())
     password_repeat: str = Field(**PASSWORD_LEN())
@@ -259,7 +259,7 @@ v1 = APIRouter(prefix="/api/v1")
 @v1.post("/user/register")
 def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database) -> Response:
     try:
-        db.add(User(id=gen_id(), email=req.email, username=req.user_name, display_name=req.user_name, password=password_hasher.hash(req.password)))
+        db.add(User(id=gen_id(), email=req.email, username=req.username, display_name=req.username, password=password_hasher.hash(req.password)))
         db.commit()
     except IntegrityError:
         raise HTTPException(409, "email or username already exists")
