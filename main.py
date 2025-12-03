@@ -157,7 +157,7 @@ def auth_user(db: Database, token: str = Depends(APIKeyCookie(name="token"))) ->
     try:
         banned = db.exec(select(User.banned).where(User.id == user_id)).one()
     except NoResultFound:
-        raise HTTPException(401, "user doesn't exist")
+        raise HTTPException(401, "user id from jwt doesn't exist in database")
     
     if banned:
         raise HTTPException(401, "user is banned")
@@ -254,12 +254,12 @@ def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database) -> 
 def login_user(req: Annotated[UserLoginRequest, Form()], db: Database) -> Response:
     user = db.exec(select(User).where(User.email == req.email)).one_or_none()
     if not user:
-        raise HTTPException(401, "email not found")
+        raise HTTPException(401)
     
     try:
         password_hasher.verify(user.password, req.password)
     except exceptions.VerifyMismatchError:
-        raise HTTPException(401, "wrong password")
+        raise HTTPException(401)
 
     days: int = 14
     expires = datetime.now(timezone.utc) + timedelta(days=days)
