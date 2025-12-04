@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError, NoResultFound
 from ulid import ULID
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.security import APIKeyCookie
-from sqlmodel import Field,  Session, SQLModel, create_engine, CHAR, func, or_, text, select, update, Relationship
+from sqlmodel import Field,  Session, SQLModel, create_engine, CHAR, desc, func, or_, text, select, update, Relationship
 from pydantic import BaseModel, EmailStr, model_validator
 from argon2 import PasswordHasher, exceptions
 from socketio import AsyncServer, ASGIApp # type: ignore
@@ -352,7 +352,7 @@ async def create_message(req: MessageCreateRequest, channel_id: str, db: Databas
 
 @v1.get("/message")
 async def get_messages(channel_id: str, db: Database, user_id: IsServerMember, token: str = Depends(APIKeyCookie(name="token"))):
-    results = db.exec(select(Message, User.display_name, User.picture).join(User).where(Message.channel_id == channel_id)).all()
+    results = db.exec(select(Message, User.display_name, User.picture).join(User).where(Message.channel_id == channel_id).order_by(desc(Message.id)).limit(50)).all()
     if results == None:
         raise HTTPException(404)
     
