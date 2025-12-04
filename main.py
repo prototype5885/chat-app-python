@@ -179,7 +179,11 @@ IsInPermittedRole = Annotated[str, Depends(is_in_permitted_role)]
 def room_path(room_type: RoomType, id: str):
     return f"{room_type}:{id}"
 
-async def enter_room(sid: str, room_type: RoomType, to_enter: str):
+async def enter_room(token: str, room_type: RoomType, to_enter: str):
+    sid = sio_client_list.get(token)
+    if sid is None:
+        print(f"token {token} couldn't enter room type {room_type} as it doesn't have a sid")
+        return
     for room in sio.rooms(sid):
         if room.startswith(room_type):
             await sio.leave_room(sid, room)
@@ -324,7 +328,7 @@ async def create_channel(server_id: str, name: Annotated[str, Query(**CHANNEL_NA
 @v1.get("/channel")
 async def get_channels(server_id: str, db: Database, user_id: IsServerMember, token: str = Depends(APIKeyCookie(name="token"))) -> Sequence[Channel]:
     channels = db.exec(select(Channel).where(Channel.server_id == server_id)).all()
-    await enter_room(sio_client_list[token], "server", server_id)
+    await enter_room(token, "server", server_id)
     return channels
 
 @v1.delete("/channel")
@@ -361,7 +365,7 @@ async def get_messages(channel_id: str, db: Database, user_id: IsServerMember, t
         message_data = {**message.__dict__, "display_name": display_name, "picture": picture}
         messages.append(message_data)
 
-    await enter_room(sio_client_list[token], "channel", channel_id)
+    await enter_room(token, "channel", channel_id)
     return messages
     
 @v1.delete("/message")
