@@ -61,27 +61,20 @@ ULID_TYPE = CHAR(ULID_LENGTH) # ULID will be always 26 char
 RoomType = Literal["server", "channel"]
 
 # lengths of fields
-class Length:
-    def __init__(self, min: int, max: int):
-        self.min = min
-        self.max = max
-
-    def __call__(self) -> Dict[str, Any]:
-        return {"min_length": self.min, "max_length": self.max}
-
-USERNAME_LEN = Length(6, 32)
-DISPLAY_NAME_LEN = Length(1, 64)
-PASSWORD_LEN = Length(6, 1024)
-SERVER_NAME_LEN = Length(1, 64)
-CHANNEL_NAME_LEN = Length(1, 32)
-MESSAGE_LEN = Length(1, 4096)
+Len = Dict[str, Any]
+USERNAME_LEN: Len = {"min_length": 6, "max_length": 32}
+DISPLAY_NAME_LEN: Len = {"min_length": 1, "max_length": 64}
+PASSWORD_LEN: Len = {"min_length": 6, "max_length": 1024}
+SERVER_NAME_LEN: Len = {"min_length": 1, "max_length": 64}
+CHANNEL_NAME_LEN: Len = {"min_length": 1, "max_length": 32}
+MESSAGE_LEN: Len = {"min_length": 1, "max_length": 4096}
 
 # models:
 class User(SQLModel, table=True):
     id: str = Field(primary_key=True, sa_type=ULID_TYPE)
-    username: str = Field(index=True, unique=True, **USERNAME_LEN())
+    username: str = Field(index=True, unique=True, **USERNAME_LEN)
     email: str = Field(index=True, unique=True)
-    display_name: str = Field(default=None, **DISPLAY_NAME_LEN())
+    display_name: str = Field(**DISPLAY_NAME_LEN)
     picture: str | None = Field(default=None)
     password: str
     banned: bool = Field(default=False)
@@ -92,7 +85,7 @@ class User(SQLModel, table=True):
 class Server(SQLModel, table=True):
     id: str = Field(primary_key=True, sa_type=ULID_TYPE)
     owner_id: str = Field(foreign_key="user.id", ondelete="CASCADE", sa_type=ULID_TYPE)
-    name: str = Field(**SERVER_NAME_LEN())
+    name: str = Field(**SERVER_NAME_LEN)
     picture: str | None = Field(default=None)
     roles: str | None = Field(default=None)
 
@@ -102,7 +95,7 @@ class Server(SQLModel, table=True):
 class Channel(SQLModel, table=True):
     id: str = Field(primary_key=True, sa_type=ULID_TYPE)
     server_id: str = Field(foreign_key="server.id", ondelete="CASCADE", sa_type=ULID_TYPE)
-    name: str = Field(**CHANNEL_NAME_LEN())
+    name: str = Field(**CHANNEL_NAME_LEN)
     # private: bool = Field(default=False)
     # allowed_roles: str | None = Field(default=None)
     # allowed_users: str | None = Field(default=None)
@@ -114,7 +107,7 @@ class Message(SQLModel, table=True):
     id: str = Field(primary_key=True, sa_type=ULID_TYPE)
     sender_id: str = Field(foreign_key="user.id", ondelete="CASCADE", sa_type=ULID_TYPE)
     channel_id: str = Field(foreign_key="channel.id", ondelete="CASCADE", sa_type=ULID_TYPE)
-    message: str = Field(**MESSAGE_LEN())
+    message: str = Field(**MESSAGE_LEN)
 
     channel: Channel = Relationship(back_populates="messages")
     user: User = Relationship(back_populates="messages")
@@ -126,10 +119,10 @@ class Server_Member(SQLModel, table=True):
 
 # DTOs:
 class UserRegisterRequest(BaseModel):
-    username: str = Field(**USERNAME_LEN())
+    username: str = Field(**USERNAME_LEN)
     email: EmailStr
-    password: str = Field(**PASSWORD_LEN())
-    password_repeat: str = Field(**PASSWORD_LEN())
+    password: str = Field(**PASSWORD_LEN)
+    password_repeat: str = Field(**PASSWORD_LEN)
 
     @model_validator(mode="after")
     def check_passwords_match(self) -> Self:
@@ -139,13 +132,13 @@ class UserRegisterRequest(BaseModel):
 
 class UserLoginRequest(BaseModel):
     email: EmailStr
-    password: str = Field(**PASSWORD_LEN())
+    password: str = Field(**PASSWORD_LEN)
 
 class MessageCreateRequest(BaseModel):
-    message: str = Field(**MESSAGE_LEN())
+    message: str = Field(**MESSAGE_LEN)
 
 class UserUpdateRequest(BaseModel):
-    display_name: str = Field(**DISPLAY_NAME_LEN())
+    display_name: str = Field(**DISPLAY_NAME_LEN)
 
 # middlewares:
 def get_session():
@@ -311,7 +304,7 @@ def update_user_info(req: Annotated[UserUpdateRequest, Form()], db: Database, us
     return values
 
 @v1.post("/server")
-def create_server(name: Annotated[str, Query(**SERVER_NAME_LEN())], db: Database, user_id: AuthUser) -> Server:
+def create_server(name: Annotated[str, Query(**SERVER_NAME_LEN)], db: Database, user_id: AuthUser) -> Server:
     server = Server(id=gen_id(), owner_id=user_id, name=name)
     db.add(server)
     db.commit()
@@ -334,7 +327,7 @@ async def delete_server(server_id: str, db: Database, user_id: AuthUser) -> Resp
     return Response(status_code=202)
 
 @v1.post("/channel")
-async def create_channel(server_id: str, name: Annotated[str, Query(**CHANNEL_NAME_LEN())], db: Database, user_id: IsServerOwner) -> Response:
+async def create_channel(server_id: str, name: Annotated[str, Query(**CHANNEL_NAME_LEN)], db: Database, user_id: IsServerOwner) -> Response:
     channel = Channel(id=gen_id(), server_id=server_id, name=name)
     channel_dict = channel.model_dump()
     db.add(channel)
