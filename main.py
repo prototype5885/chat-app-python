@@ -288,8 +288,10 @@ def update_user_info(req: Annotated[UserUpdateRequest, Form()], db: Database, us
 
 @v1.post("/server")
 def create_server(name: Annotated[str, Query(**SERVER_NAME_KW)], db: Database, user_id: AuthUser) -> Server:
-    server = Server(id=gen_id(), owner_id=user_id, name=name)
+    server_id = gen_id()
+    server = Server(id=server_id, owner_id=user_id, name=name)
     db.add(server)
+    db.add(Channel(id=gen_id(), server_id=server_id, name="Default channel"))
     db.commit()
     db.refresh(server)
     return server
