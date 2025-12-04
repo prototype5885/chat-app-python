@@ -39,42 +39,25 @@ sio_client_list: dict[str, str] = {}
 
 # ttl_cache = TTLCache(maxsize=1024, ttl=900)
    
-
-# class ULIDType(TypeDecorator):
-#     impl = CHAR
-#     cache_ok = True
-
-#     def load_dialect_impl(self, dialect: Dialect):
-#         return dialect.type_descriptor(CHAR(26))  # ULID will be always 26 char
-
-#     def process_bind_param(self, value, dialect: Dialect) -> str:
-#         return str(value)
-
-#     def process_result_value(self, value, dialect: Dialect) -> ULID:
-#         return ULID.from_str(value)
-
 # types
-ULID_LENGTH = 26
-ULID_TYPE = CHAR(ULID_LENGTH) # ULID will be always 26 char
-
-# literals
 RoomType = Literal["server", "channel"]
 
-# lengths of fields
-Len = Dict[str, Any]
-USERNAME_LEN: Len = {"min_length": 6, "max_length": 32}
-DISPLAY_NAME_LEN: Len = {"min_length": 1, "max_length": 64}
-PASSWORD_LEN: Len = {"min_length": 6, "max_length": 1024}
-SERVER_NAME_LEN: Len = {"min_length": 1, "max_length": 64}
-CHANNEL_NAME_LEN: Len = {"min_length": 1, "max_length": 32}
-MESSAGE_LEN: Len = {"min_length": 1, "max_length": 4096}
+# field kwargs
+Kwargs = Dict[str, Any]
+ULID_KW: Kwargs = {"min_length": 26, "max_length": 26, "sa_type": CHAR(26)}
+USERNAME_KW: Kwargs = {"min_length": 6, "max_length": 32}
+DISPLAY_NAME_KW: Kwargs = {"min_length": 1, "max_length": 64}
+PASSWORD_KW: Kwargs = {"min_length": 6, "max_length": 1024}
+SERVER_NAME_KW: Kwargs = {"min_length": 1, "max_length": 64}
+CHANNEL_NAME_KW: Kwargs = {"min_length": 1, "max_length": 32}
+MESSAGE_KW: Kwargs = {"min_length": 1, "max_length": 4096}
 
 # models:
 class User(SQLModel, table=True):
-    id: str = Field(primary_key=True, sa_type=ULID_TYPE)
-    username: str = Field(index=True, unique=True, **USERNAME_LEN)
+    id: str = Field(primary_key=True, **ULID_KW)
+    username: str = Field(index=True, unique=True, **USERNAME_KW)
     email: str = Field(index=True, unique=True)
-    display_name: str = Field(**DISPLAY_NAME_LEN)
+    display_name: str = Field(**DISPLAY_NAME_KW)
     picture: str | None = Field(default=None)
     password: str
     banned: bool = Field(default=False)
@@ -83,9 +66,9 @@ class User(SQLModel, table=True):
     messages: list["Message"] = Relationship(back_populates="user", cascade_delete=True)
 
 class Server(SQLModel, table=True):
-    id: str = Field(primary_key=True, sa_type=ULID_TYPE)
-    owner_id: str = Field(foreign_key="user.id", ondelete="CASCADE", sa_type=ULID_TYPE)
-    name: str = Field(**SERVER_NAME_LEN)
+    id: str = Field(primary_key=True, **ULID_KW)
+    owner_id: str = Field(foreign_key="user.id", ondelete="CASCADE", **ULID_KW)
+    name: str = Field(**SERVER_NAME_KW)
     picture: str | None = Field(default=None)
     roles: str | None = Field(default=None)
 
@@ -93,9 +76,9 @@ class Server(SQLModel, table=True):
     channels: list["Channel"] = Relationship(back_populates="server", cascade_delete=True)
 
 class Channel(SQLModel, table=True):
-    id: str = Field(primary_key=True, sa_type=ULID_TYPE)
-    server_id: str = Field(foreign_key="server.id", ondelete="CASCADE", sa_type=ULID_TYPE)
-    name: str = Field(**CHANNEL_NAME_LEN)
+    id: str = Field(primary_key=True, **ULID_KW)
+    server_id: str = Field(foreign_key="server.id", ondelete="CASCADE", **ULID_KW)
+    name: str = Field(**CHANNEL_NAME_KW)
     # private: bool = Field(default=False)
     # allowed_roles: str | None = Field(default=None)
     # allowed_users: str | None = Field(default=None)
@@ -104,25 +87,25 @@ class Channel(SQLModel, table=True):
     messages: list["Message"] = Relationship(back_populates="channel", cascade_delete=True)
 
 class Message(SQLModel, table=True):
-    id: str = Field(primary_key=True, sa_type=ULID_TYPE)
-    sender_id: str = Field(foreign_key="user.id", ondelete="CASCADE", sa_type=ULID_TYPE)
-    channel_id: str = Field(foreign_key="channel.id", ondelete="CASCADE", sa_type=ULID_TYPE)
-    message: str = Field(**MESSAGE_LEN)
+    id: str = Field(primary_key=True, **ULID_KW)
+    sender_id: str = Field(foreign_key="user.id", ondelete="CASCADE", **ULID_KW)
+    channel_id: str = Field(foreign_key="channel.id", ondelete="CASCADE", **ULID_KW)
+    message: str = Field(**MESSAGE_KW)
 
     channel: Channel = Relationship(back_populates="messages")
     user: User = Relationship(back_populates="messages")
 
 class Server_Member(SQLModel, table=True):
-    server_id: str = Field(foreign_key="server.id", primary_key=True, ondelete="CASCADE", sa_type=ULID_TYPE, index=True)
-    member_id: str = Field(foreign_key="user.id", primary_key=True, ondelete="CASCADE", sa_type=ULID_TYPE, index=True)
+    server_id: str = Field(foreign_key="server.id", primary_key=True, ondelete="CASCADE", **ULID_KW, index=True)
+    member_id: str = Field(foreign_key="user.id", primary_key=True, ondelete="CASCADE", **ULID_KW, index=True)
     member_since: datetime = Field(sa_column_kwargs={"server_default": func.now()})
 
 # DTOs:
 class UserRegisterRequest(BaseModel):
-    username: str = Field(**USERNAME_LEN)
+    username: str = Field(**USERNAME_KW)
     email: EmailStr
-    password: str = Field(**PASSWORD_LEN)
-    password_repeat: str = Field(**PASSWORD_LEN)
+    password: str = Field(**PASSWORD_KW)
+    password_repeat: str = Field(**PASSWORD_KW)
 
     @model_validator(mode="after")
     def check_passwords_match(self) -> Self:
@@ -132,13 +115,13 @@ class UserRegisterRequest(BaseModel):
 
 class UserLoginRequest(BaseModel):
     email: EmailStr
-    password: str = Field(**PASSWORD_LEN)
+    password: str = Field(**PASSWORD_KW)
 
 class MessageCreateRequest(BaseModel):
-    message: str = Field(**MESSAGE_LEN)
+    message: str = Field(**MESSAGE_KW)
 
 class UserUpdateRequest(BaseModel):
-    display_name: str = Field(**DISPLAY_NAME_LEN)
+    display_name: str = Field(**DISPLAY_NAME_KW)
 
 # middlewares:
 def get_session():
@@ -209,8 +192,8 @@ async def enter_room(sid: str, room_type: RoomType, to_enter: str):
 
 def gen_id() -> str:
     ulid = str(ULID())
-    if len(ulid) != ULID_LENGTH:
-        raise Exception(f"generated ULID {ulid} should contain exactly {ULID_LENGTH} characters, but is {len(ulid)}")
+    if len(ulid) != 26:
+        raise Exception(f"generated ULID {ulid} should contain exactly 26 characters, but is {len(ulid)}")
     return ulid
 
 
@@ -304,7 +287,7 @@ def update_user_info(req: Annotated[UserUpdateRequest, Form()], db: Database, us
     return values
 
 @v1.post("/server")
-def create_server(name: Annotated[str, Query(**SERVER_NAME_LEN)], db: Database, user_id: AuthUser) -> Server:
+def create_server(name: Annotated[str, Query(**SERVER_NAME_KW)], db: Database, user_id: AuthUser) -> Server:
     server = Server(id=gen_id(), owner_id=user_id, name=name)
     db.add(server)
     db.commit()
@@ -327,7 +310,7 @@ async def delete_server(server_id: str, db: Database, user_id: AuthUser) -> Resp
     return Response(status_code=202)
 
 @v1.post("/channel")
-async def create_channel(server_id: str, name: Annotated[str, Query(**CHANNEL_NAME_LEN)], db: Database, user_id: IsServerOwner) -> Response:
+async def create_channel(server_id: str, name: Annotated[str, Query(**CHANNEL_NAME_KW)], db: Database, user_id: IsServerOwner) -> Response:
     channel = Channel(id=gen_id(), server_id=server_id, name=name)
     channel_dict = channel.model_dump()
     db.add(channel)
