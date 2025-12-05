@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, Literal, Self, Sequence
 from sqlalchemy.exc import IntegrityError, NoResultFound
 from ulid import ULID
-from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request, Response, Header
 from fastapi.security import APIKeyCookie
 from sqlmodel import Field,  Session, SQLModel, create_engine, CHAR, desc, func, or_, text, select, update, Relationship
 from pydantic import BaseModel, EmailStr, model_validator
@@ -35,7 +35,6 @@ sio = AsyncServer(cors_allowed_origins='*',async_mode='asgi')
 socket_app = ASGIApp(socketio_server=sio, other_asgi_app=app)
 app.mount("/socket.io", socket_app)
 
-sio_client_list: dict[str, str] = {}
 
 # ttl_cache = TTLCache(maxsize=1024, ttl=900)
    
@@ -168,22 +167,30 @@ def is_server_member(db: Database, server_id: str, user_id: AuthUser) -> str:
 def is_in_permitted_role(db: Database, channel_id: str, user_id: AuthUser) -> str:
     return user_id
 
+async def socket_io_id(sid: Annotated[str | None, Header()] = None, token: str = Depends(APIKeyCookie(name="token"))):
+    if sid is None:
+        raise HTTPException(400, "no header named Sid found")
+    session = await sio.get_session(sid)
+    token_in_sio = session.get("token")
+    if not isinstance(token_in_sio, str):
+        raise HTTPException(401, "no token associated with received sid")
+    if token_in_sio != token:
+        raise HTTPException(401, "received token and token associated with received sid don't match")
+    print(f"sid {sid} belongs to token {token}")
+    return sid
+
 Database = Annotated[Session, Depends(get_session)]
 AuthUser = Annotated[str, Depends(auth_user)]
 IsServerOwner = Annotated[str, Depends(is_server_owner)]
 IsServerMember = Annotated[str, Depends(is_server_member)]
 IsInPermittedRole = Annotated[str, Depends(is_in_permitted_role)]
-
+Sid = Annotated[str, Depends(socket_io_id)]
 
 # macros
 def room_path(room_type: RoomType, id: str):
     return f"{room_type}:{id}"
 
-async def enter_room(token: str, room_type: RoomType, to_enter: str):
-    sid = sio_client_list.get(token)
-    if sid is None:
-        print(f"token {token} couldn't enter room type {room_type} as it doesn't have a sid")
-        return
+async def enter_room(sid: str, room_type: RoomType, to_enter: str):
     for room in sio.rooms(sid):
         if room.startswith(room_type):
             await sio.leave_room(sid, room)
@@ -211,17 +218,12 @@ async def connect(sid, env):
         except:
             raise ConnectionRefusedError('authentication failed')
         
-    sio_client_list[token] = sid
+    await sio.save_session(sid, {"token": token})
     print(f"Socket connected: {sid} with token: {token}")
 
 @sio.event
 async def disconnect(sid, reason):
     print(f"Client Disconnected: {sid}, reason: {reason}")
-    for key, value in list(sio_client_list.items()):
-        if value == sid:
-            del sio_client_list[key]
-            print(f"Deleted sid {value} from sio_client_list")
-            break
 
 
 # FastAPI paths
@@ -326,9 +328,9 @@ async def create_channel(server_id: str, name: Annotated[str, Query(**CHANNEL_NA
     return Response(status_code=202)
 
 @v1.get("/channel")
-async def get_channels(server_id: str, db: Database, user_id: IsServerMember, token: str = Depends(APIKeyCookie(name="token"))) -> Sequence[Channel]:
+async def get_channels(server_id: str, db: Database, user_id: IsServerMember, sid: Sid) -> Sequence[Channel]:
     channels = db.exec(select(Channel).where(Channel.server_id == server_id)).all()
-    await enter_room(token, "server", server_id)
+    await enter_room(sid, "server", server_id)
     return channels
 
 @v1.delete("/channel")
@@ -355,7 +357,7 @@ async def create_message(req: MessageCreateRequest, channel_id: str, db: Databas
     return Response(status_code=202)
 
 @v1.get("/message")
-async def get_messages(channel_id: str, db: Database, user_id: IsServerMember, token: str = Depends(APIKeyCookie(name="token"))):
+async def get_messages(channel_id: str, db: Database, user_id: IsServerMember, sid: Sid):
     results = db.exec(select(Message, User.display_name, User.picture).join(User).where(Message.channel_id == channel_id).order_by(desc(Message.id)).limit(50)).all()
     if results == None:
         raise HTTPException(404)
@@ -365,7 +367,7 @@ async def get_messages(channel_id: str, db: Database, user_id: IsServerMember, t
         message_data = {**message.__dict__, "display_name": display_name, "picture": picture}
         messages.append(message_data)
 
-    await enter_room(token, "channel", channel_id)
+    await enter_room(sid, "channel", channel_id)
     return messages
     
 @v1.delete("/message")
