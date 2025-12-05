@@ -14,7 +14,6 @@ from sqlmodel import Field,  Session, SQLModel, create_engine, CHAR, desc, func,
 from pydantic import BaseModel, EmailStr, model_validator
 from argon2 import PasswordHasher, exceptions
 from socketio import AsyncServer, ASGIApp # type: ignore
-# from cachetools import TTLCache, cached
 
 load_dotenv()
 if not os.getenv("JWT_SECRET"):
@@ -32,11 +31,7 @@ password_hasher = PasswordHasher()
 
 # socket.io
 sio = AsyncServer(cors_allowed_origins='*',async_mode='asgi')
-socket_app = ASGIApp(socketio_server=sio, other_asgi_app=app)
-app.mount("/socket.io", socket_app)
-
-
-# ttl_cache = TTLCache(maxsize=1024, ttl=900)
+app.mount("/socket.io", ASGIApp(socketio_server=sio, other_asgi_app=app))
    
 # types
 RoomType = Literal["server", "channel"]
@@ -127,41 +122,40 @@ def get_session():
     with Session(engine) as session:
         yield session
 
-# @cached(cache=ttl_cache, key=lambda db, token: (token))
 def auth_user(db: Database, token: str = Depends(APIKeyCookie(name="token"))) -> str:
     try:
         jwt_payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
     except:
-        raise HTTPException(401, "error decoding jwt")
+        raise HTTPException(401, "Error decoding jwt")
     
     user_id = jwt_payload.get("user_id")
     if not isinstance(user_id, str):
-        raise HTTPException(401, "error getting user_id from jwt")
+        raise HTTPException(401, "Error getting user_id from jwt")
 
     try:
         banned = db.exec(select(User.banned).where(User.id == user_id)).one()
     except NoResultFound:
-        raise HTTPException(401, "user id from jwt doesn't exist in database")
+        raise HTTPException(401, "User id from jwt doesn't exist in database")
     
     if banned:
-        raise HTTPException(401, "user is banned")
+        raise HTTPException(401, "User is banned")
 
     return user_id
 
 def is_server_owner(db: Database, server_id: str, user_id: AuthUser) -> str:
     owner_id = db.exec(select(Server.owner_id).where(Server.id == server_id and Server.owner_id == user_id)).one_or_none()
     if not owner_id:
-        raise HTTPException(401, f"not owner of server ID {server_id}")
+        raise HTTPException(401, "Not owner of server, which may not even exist")
 
     return user_id
 
 def is_server_member(db: Database, server_id: str, user_id: AuthUser) -> str:
     result = db.exec(select(Server.owner_id, Server_Member.member_id).where(Server.id == server_id)
                     .join(Server_Member, isouter=True)
-                    .where(or_(Server.owner_id == user_id,Server_Member.member_id == user_id))
+                    .where(or_(Server.owner_id == user_id, Server_Member.member_id == user_id))
                     .distinct()).one_or_none()
     if not result:
-        raise HTTPException(401, f"not member or owner of server ID {server_id}")
+        raise HTTPException(401, "Not member or owner of server, which may not even exist")
     return user_id
 
 def is_in_permitted_role(db: Database, channel_id: str, user_id: AuthUser) -> str:
@@ -169,13 +163,13 @@ def is_in_permitted_role(db: Database, channel_id: str, user_id: AuthUser) -> st
 
 async def socket_io_id(sid: Annotated[str | None, Header()] = None, token: str = Depends(APIKeyCookie(name="token"))):
     if sid is None:
-        raise HTTPException(400, "no header named Sid found")
+        raise HTTPException(400, "No header with name 'Sid' found")
     try:
         session = await sio.get_session(sid)
     except:
-        raise HTTPException(401, "no socket.io session associated with received sid")
+        raise HTTPException(401, "No Socket.IO session is associated with received sid")
     if session.get("token") != token:
-        raise HTTPException(401, "received token and token associated with received sid don't match")
+        raise HTTPException(401, "Received token and token associated with received sid don't match")
     return sid
 
 Database = Annotated[Session, Depends(get_session)]
@@ -206,7 +200,6 @@ def gen_id() -> str:
         raise Exception(f"generated ULID {ulid} should contain exactly 26 characters, but is {len(ulid)}")
     return ulid
 
-
 # socket.io paths
 @sio.event
 async def connect(sid, env):
@@ -223,7 +216,6 @@ async def connect(sid, env):
 @sio.event
 async def disconnect(sid, reason):
     print(f"Client Disconnected: {sid}, reason: {reason}")
-
 
 # FastAPI paths
 @app.on_event("startup")
@@ -243,7 +235,7 @@ def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database) -> 
         db.add(User(id=gen_id(), email=req.email, username=req.username, display_name=req.username, password=password_hasher.hash(req.password)))
         db.commit()
     except IntegrityError:
-        raise HTTPException(409, "email or username already exists")
+        raise HTTPException(409)
     return Response(status_code=303, headers={"Location": "/login"})
 
 @v1.post("/user/login")
@@ -309,7 +301,7 @@ def get_servers(db: Database, user_id: AuthUser) -> Sequence[Server]:
 async def delete_server(server_id: str, db: Database, user_id: AuthUser) -> Response:
     server = db.exec(select(Server).where(Server.id == server_id and Server.owner_id == user_id)).one_or_none()
     if not server:
-        raise HTTPException(404)
+        raise HTTPException(401)
     db.delete(server)
     db.commit()
     
@@ -336,7 +328,7 @@ async def get_channels(server_id: str, db: Database, user_id: IsServerMember, si
 async def delete_channel(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner) -> Response:
     channel = db.exec(select(Channel).where(Channel.id == channel_id and Channel.server_id == server_id)).one_or_none()
     if not channel:
-        raise HTTPException(404)
+        raise HTTPException(401)
     db.delete(channel)
     db.commit()
 
@@ -358,8 +350,6 @@ async def create_message(req: MessageCreateRequest, channel_id: str, db: Databas
 @v1.get("/message")
 async def get_messages(channel_id: str, db: Database, user_id: IsServerMember, sid: Sid):
     results = db.exec(select(Message, User.display_name, User.picture).join(User).where(Message.channel_id == channel_id).order_by(desc(Message.id)).limit(50)).all()
-    if results == None:
-        raise HTTPException(404)
     
     messages = []
     for message, display_name, picture in results:
@@ -373,7 +363,7 @@ async def get_messages(channel_id: str, db: Database, user_id: IsServerMember, s
 async def delete_message(message_id: str, db: Database, user_id: AuthUser) -> Response:
     message = db.exec(select(Message).where(Message.id == message_id and Message.sender_id == user_id)).one_or_none()
     if not message:
-        raise HTTPException(404)
+        raise HTTPException(401)
     db.delete(message)
     db.commit()
 
@@ -382,6 +372,7 @@ async def delete_message(message_id: str, db: Database, user_id: AuthUser) -> Re
 
 app.include_router(v1)
 
+# static files
 @app.get("/login")
 def login_page():
     return FileResponse("./static/login.html")
