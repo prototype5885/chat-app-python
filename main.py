@@ -170,10 +170,13 @@ def is_in_permitted_role(db: Database, channel_id: str, user_id: AuthUser) -> st
 async def socket_io_id(sid: Annotated[str | None, Header()] = None, token: str = Depends(APIKeyCookie(name="token"))):
     if sid is None:
         raise HTTPException(400, "no header named Sid found")
-    session = await sio.get_session(sid)
+    try:
+        session = await sio.get_session(sid)
+    except:
+        raise HTTPException(401, "no socket.io session associated with received sid")
     token_in_sio = session.get("token")
-    if not isinstance(token_in_sio, str):
-        raise HTTPException(401, "no token associated with received sid")
+    if not isinstance(token_in_sio, str): # this shouldn't be possible as token is always set on connect
+        raise HTTPException(500, "no token associated with received sid")
     if token_in_sio != token:
         raise HTTPException(401, "received token and token associated with received sid don't match")
     print(f"sid {sid} belongs to token {token}")
