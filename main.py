@@ -286,7 +286,7 @@ def get_user_info(db: Database, user_id: AuthUser) -> dict:
     display_name, picture = db.exec(select(User.display_name, User.picture).where(User.id == user_id)).one()
     return {"id": user_id, "display_name": display_name, "picture": picture}
 
-@v1.post("/user")
+@v1.patch("/user")
 def update_user_info(req: Annotated[UserUpdateRequest, Form()], db: Database, user_id: AuthUser) -> dict:
     values = req.model_dump()
     db.exec(update(User).where(User.id == user_id).values(values)); db.commit() # pyright: ignore[reportArgumentType]
