@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 import os
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -36,7 +37,13 @@ if engine.url.drivername == "sqlite":
         cursor.execute("PRAGMA foreign_keys=ON;")
         cursor.close()
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    SQLModel.metadata.create_all(engine)
+    yield
+    # code after yield runs before shutdown
+
+app = FastAPI(lifespan=lifespan)
 password_hasher = PasswordHasher()
 
 # socket.io
@@ -228,10 +235,6 @@ async def disconnect(sid, reason):
     print(f"Client Disconnected: {sid}, reason: {reason}")
 
 # FastAPI paths
-@app.on_event("startup")
-def on_startup():
-    SQLModel.metadata.create_all(engine)
-
 v1 = APIRouter(prefix="/api/v1")
 
 @v1.post("/user/register")
