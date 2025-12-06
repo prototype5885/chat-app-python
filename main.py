@@ -6,10 +6,11 @@ import secrets
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, Literal, Self, Sequence
-from sqlalchemy.exc import IntegrityError, NoResultFound
 from ulid import ULID
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request, Response, Header
 from fastapi.security import APIKeyCookie
+from sqlalchemy import Engine, event
+from sqlalchemy.exc import IntegrityError, NoResultFound
 from sqlmodel import Field,  Session, SQLModel, create_engine, CHAR, desc, func, or_, text, select, update, Relationship
 from pydantic import BaseModel, EmailStr, model_validator
 from argon2 import PasswordHasher, exceptions
@@ -26,6 +27,15 @@ else:
     print("Loaded JWT_SECRET from .env")
 
 engine = create_engine("sqlite:///database.db", connect_args={"check_same_thread": False}, echo=True)
+
+# this makes sure foreign key is enabled for every new connection to sqlite
+if engine.url.drivername == "sqlite":
+    @event.listens_for(Engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON;")
+        cursor.close()
+
 app = FastAPI()
 password_hasher = PasswordHasher()
 
@@ -221,11 +231,6 @@ async def disconnect(sid, reason):
 @app.on_event("startup")
 def on_startup():
     SQLModel.metadata.create_all(engine)
-    with engine.connect() as db:
-        queries = ["PRAGMA foreign_keys=ON"] # running this for sqlite
-        # queries.extend(["PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL"])
-        for query in queries:
-            db.execute(text(query))
 
 v1 = APIRouter(prefix="/api/v1")
 
