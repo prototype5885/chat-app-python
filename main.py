@@ -119,7 +119,7 @@ class UserUpdateRequest(BaseModel):
 
 # middlewares:
 def get_session():
-    with Session(engine) as session:
+    with Session(engine, expire_on_commit=False) as session:
         yield session
 
 def auth_user(db: Database, token: str = Depends(APIKeyCookie(name="token"))) -> str:
@@ -209,7 +209,7 @@ async def connect(sid, env):
             user_id = auth_user(session, env["HTTP_COOKIE"].split('token=', 1)[1])
         except:
             raise ConnectionRefusedError('authentication failed')
-        
+
     await sio.save_session(sid, {"token": token})
     print(f"Socket connected: {sid} with token: {token}")
 
@@ -232,10 +232,12 @@ v1 = APIRouter(prefix="/api/v1")
 @v1.post("/user/register")
 def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database) -> Response:
     try:
-        db.add(User(id=gen_id(), email=req.email, username=req.username, display_name=req.username, password=password_hasher.hash(req.password)))
-        db.commit()
+        user = User(id=gen_id(), email=req.email, username=req.username, display_name=req.username, 
+                    password=password_hasher.hash(req.password))
+        db.add(user); db.commit()
     except IntegrityError:
         raise HTTPException(409)
+    
     return Response(status_code=303, headers={"Location": "/login"})
 
 @v1.post("/user/login")
@@ -264,23 +266,22 @@ def logout_user() -> Response:
     return response
 
 @v1.get("/test")
-def test():
+def test() -> str:
     return "Hello world!"
 
 @v1.get("/test_auth")
-def test_auth(user_id: AuthUser):
+def test_auth(user_id: AuthUser) -> str:
     return user_id
 
 @v1.get("/user")
-def get_user_info(db: Database, user_id: AuthUser):
+def get_user_info(db: Database, user_id: AuthUser) -> dict:
     display_name, picture = db.exec(select(User.display_name, User.picture).where(User.id == user_id)).one()
     return {"id": user_id, "display_name": display_name, "picture": picture}
 
 @v1.post("/user")
-def update_user_info(req: Annotated[UserUpdateRequest, Form()], db: Database, user_id: AuthUser):
+def update_user_info(req: Annotated[UserUpdateRequest, Form()], db: Database, user_id: AuthUser) -> dict:
     values = req.model_dump()
-    db.exec(update(User).where(User.id == user_id).values(values)) # pyright: ignore[reportArgumentType]
-    db.commit()
+    db.exec(update(User).where(User.id == user_id).values(values)); db.commit() # pyright: ignore[reportArgumentType]
     return values
 
 @v1.post("/server")
@@ -290,20 +291,20 @@ def create_server(name: Annotated[str, Query(**SERVER_NAME_KW)], db: Database, u
     db.add(server)
     db.add(Channel(id=gen_id(), server_id=server_id, name="Default channel"))
     db.commit()
-    db.refresh(server)
     return server
 
 @v1.get("/server")
 def get_servers(db: Database, user_id: AuthUser) -> Sequence[Server]:
-    return db.exec(select(Server).join(Server_Member, isouter=True).where(or_(Server.owner_id == user_id, Server_Member.member_id == user_id)).distinct()).all()
+    return db.exec(select(Server).join(Server_Member, isouter=True)
+                   .where(or_(Server.owner_id == user_id, Server_Member.member_id == user_id)).distinct()).all()
 
 @v1.delete("/server")
 async def delete_server(server_id: str, db: Database, user_id: AuthUser) -> Response:
     server = db.exec(select(Server).where(Server.id == server_id and Server.owner_id == user_id)).one_or_none()
     if not server:
         raise HTTPException(401)
-    db.delete(server)
-    db.commit()
+    
+    db.delete(server); db.commit()
     
     await sio.emit("delete_server", server_id, room_path("server", server_id))
     return Response(status_code=202)
@@ -312,8 +313,7 @@ async def delete_server(server_id: str, db: Database, user_id: AuthUser) -> Resp
 async def create_channel(server_id: str, name: Annotated[str, Query(**CHANNEL_NAME_KW)], db: Database, user_id: IsServerOwner) -> Response:
     channel = Channel(id=gen_id(), server_id=server_id, name=name)
     channel_dict = channel.model_dump()
-    db.add(channel)
-    db.commit()
+    db.add(channel); db.commit()
 
     await sio.emit("create_channel", channel_dict, room_path("server", server_id))
     return Response(status_code=202)
@@ -329,8 +329,8 @@ async def delete_channel(server_id: str, channel_id: str, db: Database, user_id:
     channel = db.exec(select(Channel).where(Channel.id == channel_id and Channel.server_id == server_id)).one_or_none()
     if not channel:
         raise HTTPException(401)
-    db.delete(channel)
-    db.commit()
+    
+    db.delete(channel); db.commit()
 
     await sio.emit("delete_channel", channel_id, room_path("server", server_id))
     return Response(status_code=202)
@@ -338,34 +338,31 @@ async def delete_channel(server_id: str, channel_id: str, db: Database, user_id:
 @v1.post("/message")
 async def create_message(req: MessageCreateRequest, channel_id: str, db: Database, user_id: IsServerMember) -> Response:
     message = Message(id=gen_id(), sender_id=user_id, channel_id=channel_id, message=req.message)
-    message_dict = message.model_dump()
-    db.add(message)
-    db.commit()
+    db.add(message); db.commit()
 
     display_name, picture = db.exec(select(User.display_name, User.picture).where(User.id == user_id)).one()
 
-    await sio.emit("create_message", {**message_dict, "display_name": display_name, "picture": picture}, room_path("channel", channel_id))
+    data = {**message.model_dump(), "display_name": display_name, "picture": picture}
+    await sio.emit("create_message", data, room_path("channel", channel_id))
     return Response(status_code=202)
 
 @v1.get("/message")
-async def get_messages(channel_id: str, db: Database, user_id: IsServerMember, sid: Sid):
-    results = db.exec(select(Message, User.display_name, User.picture).join(User).where(Message.channel_id == channel_id).order_by(desc(Message.id)).limit(50)).all()
+async def get_messages(channel_id: str, db: Database, user_id: IsServerMember, sid: Sid) -> list:
+    results = db.exec(select(Message, User.display_name, User.picture).join(User)
+                      .where(Message.channel_id == channel_id).order_by(desc(Message.id)).limit(50)).all()
     
-    messages = []
-    for message, display_name, picture in results:
-        message_data = {**message.__dict__, "display_name": display_name, "picture": picture}
-        messages.append(message_data)
-
     await enter_room(sid, "channel", channel_id)
-    return messages
-    
+
+    return [{**message.model_dump(), "display_name": display_name, "picture": picture} 
+            for message, display_name, picture in results]
+
 @v1.delete("/message")
 async def delete_message(message_id: str, db: Database, user_id: AuthUser) -> Response:
     message = db.exec(select(Message).where(Message.id == message_id and Message.sender_id == user_id)).one_or_none()
     if not message:
         raise HTTPException(401)
-    db.delete(message)
-    db.commit()
+    
+    db.delete(message); db.commit()
 
     await sio.emit("delete_message", message.id, room_path("channel", message.channel_id))
     return Response(status_code=202)
