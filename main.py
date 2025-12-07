@@ -228,6 +228,9 @@ def gen_id() -> str:
         raise Exception(f"generated ULID {ulid} should contain exactly 26 characters, but is {len(ulid)}")
     return ulid
 
+def get_display_name(db: Database, user_id: str) -> str: # TODO not optimal solution, extra query
+    return db.exec(select(User.display_name).where(User.id == user_id)).one()
+
 # socket.io paths
 @sio.event
 async def connect(sid, env):
@@ -387,8 +390,9 @@ async def delete_message(message_id: str, db: Database, user_id: AuthUser) -> Re
     return Response(status_code=202)
 
 @v1.post("/typing")
-async def typing(value: Literal["start", "stop"], channel_id: str, user_id: IsServerMember):
-    await sio.emit(f"{value}_typing", user_id, room_path("channel", channel_id))
+async def typing(db: Database, value: Literal["start", "stop"], channel_id: str, user_id: IsServerMember):
+    display_name = get_display_name(db, user_id)
+    await sio.emit(f"{value}_typing", display_name, room_path("channel", channel_id))
 
 app.include_router(v1)
 
