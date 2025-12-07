@@ -386,6 +386,10 @@ async def delete_message(message_id: str, db: Database, user_id: AuthUser) -> Re
     await sio.emit("delete_message", message.id, room_path("channel", message.channel_id))
     return Response(status_code=202)
 
+@v1.post("/typing")
+async def typing(value: Literal["start", "stop"], channel_id: str, user_id: IsServerMember):
+    await sio.emit(f"{value}_typing", user_id, room_path("channel", channel_id))
+
 app.include_router(v1)
 
 # static files
