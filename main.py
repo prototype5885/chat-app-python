@@ -27,7 +27,15 @@ else:
     JWT_SECRET = os.environ["JWT_SECRET"]
     print("Loaded JWT_SECRET from .env")
 
-engine = create_engine("sqlite:///database.db", connect_args={"check_same_thread": False}, echo=True)
+sqlite_filename = "database/database.db"
+db_url = f"sqlite:///{sqlite_filename}"
+connect_args = {}
+
+if db_url.startswith("sqlite"): 
+    os.makedirs(os.path.dirname(sqlite_filename), exist_ok=True)
+    connect_args = {"check_same_thread": False}
+
+engine = create_engine(url=db_url, connect_args=connect_args, echo=True)
 
 if engine.url.drivername == "sqlite": # runs on every connection to sqlite
     @event.listens_for(Engine, "connect")
