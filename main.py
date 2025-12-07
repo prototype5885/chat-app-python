@@ -29,17 +29,20 @@ else:
 
 engine = create_engine("sqlite:///database.db", connect_args={"check_same_thread": False}, echo=True)
 
-# this makes sure foreign key is enabled for every new connection to sqlite
-if engine.url.drivername == "sqlite":
+if engine.url.drivername == "sqlite": # runs on every connection to sqlite
     @event.listens_for(Engine, "connect")
     def set_sqlite_pragma(dbapi_connection, connection_record):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON;")
+        cursor.execute("PRAGMA synchronous=NORMAL;")
         cursor.close()
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI): # runs on start or before shutdown
     SQLModel.metadata.create_all(engine)
+    if engine.url.drivername == "sqlite":
+        with engine.connect() as db:
+            db.execute(text("PRAGMA journal_mode=WAL;"))
     yield
     # code after yield runs before shutdown
 
