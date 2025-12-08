@@ -6,14 +6,14 @@ import jwt
 import secrets
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, Dict, Literal, Self, Sequence
+from typing import Annotated, Any, Dict, List, Literal, Optional, Self
 from ulid import ULID
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request, Response, Header
 from fastapi.security import APIKeyCookie
-from sqlalchemy import Engine, event
+from sqlalchemy import CHAR, Boolean, DateTime, Engine, ForeignKey, String, create_engine, desc, event, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError, NoResultFound
-from sqlmodel import Field,  Session, SQLModel, create_engine, CHAR, desc, func, or_, text, select, update, Relationship
-from pydantic import BaseModel, EmailStr, model_validator
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
+from pydantic import BaseModel, EmailStr, Field, model_validator
 from argon2 import PasswordHasher, exceptions
 from socketio import AsyncServer, ASGIApp # type: ignore
 
@@ -45,9 +45,13 @@ if engine.url.drivername == "sqlite": # runs on every connection to sqlite
         cursor.execute("PRAGMA synchronous=NORMAL;")
         cursor.close()
 
+class Base(DeclarativeBase):
+    def to_dict(self):
+        return {field.name:getattr(self, field.name) for field in self.__table__.c}
+
 @asynccontextmanager
 async def lifespan(app: FastAPI): # runs on start or before shutdown
-    SQLModel.metadata.create_all(engine)
+    Base.metadata.create_all(engine)
     if engine.url.drivername == "sqlite":
         with engine.connect() as db:
             db.execute(text("PRAGMA journal_mode=WAL;"))
@@ -66,61 +70,69 @@ RoomType = Literal["server", "channel"]
 
 # field kwargs
 Kwargs = Dict[str, Any]
-ULID_KW: Kwargs = {"min_length": 26, "max_length": 26, "sa_type": CHAR(26)}
+# ULID_KW: Kwargs = {"min_length": 26, "max_length": 26, "sa_type": CHAR(26)}
 USERNAME_KW: Kwargs = {"min_length": 6, "max_length": 32}
 DISPLAY_NAME_KW: Kwargs = {"min_length": 1, "max_length": 64}
-PASSWORD_KW: Kwargs = {"min_length": 6, "max_length": 1024}
+PASSWORD_KW: Kwargs = {"min_length": 6, "max_length": 1024} 
 SERVER_NAME_KW: Kwargs = {"min_length": 1, "max_length": 64}
 CHANNEL_NAME_KW: Kwargs = {"min_length": 1, "max_length": 32}
 MESSAGE_KW: Kwargs = {"min_length": 1, "max_length": 4096}
 
 # models:
-class User(SQLModel, table=True):
-    id: str = Field(primary_key=True, **ULID_KW)
-    username: str = Field(index=True, unique=True, **USERNAME_KW)
-    email: str = Field(index=True, unique=True)
-    display_name: str = Field(**DISPLAY_NAME_KW)
-    picture: str | None = Field(default=None)
-    password: str
-    banned: bool = Field(default=False)
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[str] = mapped_column(CHAR(26), primary_key=True)
+    username: Mapped[str] = mapped_column(index=True, unique=True)
+    email: Mapped[str] = mapped_column(index=True, unique=True)
+    display_name: Mapped[str]
+    picture: Mapped[Optional[str]]
+    password: Mapped[str]
+    banned: Mapped[bool] = mapped_column(Boolean, default=False)
+    
+    servers: Mapped[List["Server"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    messages: Mapped[List["Message"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
-    servers: list["Server"] = Relationship(back_populates="user", cascade_delete=True)
-    messages: list["Message"] = Relationship(back_populates="user", cascade_delete=True)
+class Server(Base):
+    __tablename__ = "servers"
+    id: Mapped[str] = mapped_column(CHAR(26), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(CHAR(26), ForeignKey("users.id", ondelete="CASCADE"))
+    name: Mapped[str]
+    picture: Mapped[Optional[str]]
+    banner: Mapped[Optional[str]]
+    roles: Mapped[Optional[str]]
+    
+    user: Mapped["User"] = relationship(back_populates="servers")
+    channels: Mapped[List["Channel"]] = relationship(back_populates="server", cascade="all, delete-orphan")
 
-class Server(SQLModel, table=True):
-    id: str = Field(primary_key=True, **ULID_KW)
-    owner_id: str = Field(foreign_key="user.id", ondelete="CASCADE", **ULID_KW)
-    name: str = Field(**SERVER_NAME_KW)
-    picture: str | None = Field(default=None)
-    roles: str | None = Field(default=None)
+class Channel(Base):
+    __tablename__ = "channels"
+    id: Mapped[str] = mapped_column(CHAR(26), primary_key=True)
+    server_id: Mapped[str] = mapped_column(String, ForeignKey("servers.id", ondelete="CASCADE"))
+    name: Mapped[str]
+    # private: Mapped[bool] = mapped_column(Boolean, default=False)
+    # allowed_roles: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # allowed_users: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    
+    server: Mapped["Server"] = relationship(back_populates="channels")
+    messages: Mapped[List["Message"]] = relationship(back_populates="channel", cascade="all, delete-orphan")
 
-    user: User = Relationship(back_populates="servers")
-    channels: list["Channel"] = Relationship(back_populates="server", cascade_delete=True)
+class Message(Base):
+    __tablename__ = "messages"
+    id: Mapped[str] = mapped_column(CHAR(26), primary_key=True)
+    sender_id: Mapped[str] = mapped_column(CHAR(26), ForeignKey("users.id", ondelete="CASCADE"))
+    channel_id: Mapped[str] = mapped_column(CHAR(26), ForeignKey("channels.id", ondelete="CASCADE"))
+    message: Mapped[str] = mapped_column(String(4096))
+    attachments: Mapped[Optional[str]] = mapped_column(default=None)
+    edited: Mapped[Optional[bool]] = mapped_column(default=None)
+    
+    channel: Mapped["Channel"] = relationship(back_populates="messages")
+    user: Mapped["User"] = relationship(back_populates="messages")
 
-class Channel(SQLModel, table=True):
-    id: str = Field(primary_key=True, **ULID_KW)
-    server_id: str = Field(foreign_key="server.id", ondelete="CASCADE", **ULID_KW)
-    name: str = Field(**CHANNEL_NAME_KW)
-    # private: bool = Field(default=False)
-    # allowed_roles: str | None = Field(default=None)
-    # allowed_users: str | None = Field(default=None)
-
-    server: Server = Relationship(back_populates="channels")
-    messages: list["Message"] = Relationship(back_populates="channel", cascade_delete=True)
-
-class Message(SQLModel, table=True):
-    id: str = Field(primary_key=True, **ULID_KW)
-    sender_id: str = Field(foreign_key="user.id", ondelete="CASCADE", **ULID_KW)
-    channel_id: str = Field(foreign_key="channel.id", ondelete="CASCADE", **ULID_KW)
-    message: str = Field(**MESSAGE_KW)
-
-    channel: Channel = Relationship(back_populates="messages")
-    user: User = Relationship(back_populates="messages")
-
-class Server_Member(SQLModel, table=True):
-    server_id: str = Field(foreign_key="server.id", primary_key=True, ondelete="CASCADE", **ULID_KW, index=True)
-    member_id: str = Field(foreign_key="user.id", primary_key=True, ondelete="CASCADE", **ULID_KW, index=True)
-    member_since: datetime = Field(sa_column_kwargs={"server_default": func.now()})
+class Server_Member(Base):
+    __tablename__ = "server_members"
+    server_id: Mapped[str] = mapped_column(CHAR(26), ForeignKey("servers.id", ondelete="CASCADE"), primary_key=True, index=True)
+    member_id: Mapped[str] = mapped_column(CHAR(26), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, index=True)
+    member_since: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 # DTOs:
 class UserRegisterRequest(BaseModel):
@@ -142,8 +154,9 @@ class UserLoginRequest(BaseModel):
 class MessageCreateRequest(BaseModel):
     message: str = Field(**MESSAGE_KW)
 
-class UserUpdateRequest(BaseModel):
-    display_name: str = Field(**DISPLAY_NAME_KW)
+class UpdateUserInfoRequest(BaseModel):
+    display_name: Optional[str] = Field(**DISPLAY_NAME_KW)
+    picture: Optional[str] = None
 
 # middlewares:
 def get_session():
@@ -161,7 +174,7 @@ def auth_user(db: Database, token: str = Depends(APIKeyCookie(name="token"))) ->
         raise HTTPException(401, "Error getting user_id from jwt")
 
     try:
-        banned = db.exec(select(User.banned).where(User.id == user_id)).one()
+        banned = db.execute(select(User.banned).where(User.id == user_id)).scalar_one()
     except NoResultFound:
         raise HTTPException(401, "User id from jwt doesn't exist in database")
     
@@ -171,17 +184,17 @@ def auth_user(db: Database, token: str = Depends(APIKeyCookie(name="token"))) ->
     return user_id
 
 def is_server_owner(db: Database, server_id: str, user_id: AuthUser) -> str:
-    owner_id = db.exec(select(Server.owner_id).where(Server.id == server_id and Server.owner_id == user_id)).one_or_none()
+    owner_id = db.scalar(select(Server.owner_id).where(Server.id == server_id and Server.owner_id == user_id))
     if not owner_id:
         raise HTTPException(401, "Not owner of server, which may not even exist")
 
     return user_id
 
 def is_server_member(db: Database, server_id: str, user_id: AuthUser) -> str:
-    result = db.exec(select(Server.owner_id, Server_Member.member_id).where(Server.id == server_id)
+    result = db.execute(select(Server.owner_id, Server_Member.member_id).where(Server.id == server_id)
                     .join(Server_Member, isouter=True)
                     .where(or_(Server.owner_id == user_id, Server_Member.member_id == user_id))
-                    .distinct()).one_or_none()
+                    .distinct()).scalar_one_or_none()
     if not result:
         raise HTTPException(401, "Not member or owner of server, which may not even exist")
     return user_id
@@ -229,7 +242,7 @@ def gen_id() -> str:
     return ulid
 
 def get_display_name(db: Database, user_id: str) -> str: # TODO not optimal solution, extra query
-    return db.exec(select(User.display_name).where(User.id == user_id)).one()
+    return db.execute(select(User.display_name).where(User.id == user_id)).scalar_one()
 
 # socket.io paths
 @sio.event
@@ -264,7 +277,7 @@ def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database) -> 
 
 @v1.post("/user/login")
 def login_user(req: Annotated[UserLoginRequest, Form()], db: Database) -> Response:
-    user = db.exec(select(User).where(User.email == req.email)).one_or_none()
+    user = db.scalar(select(User).where(User.email == req.email))
     if not user:
         raise HTTPException(401)
     
@@ -297,32 +310,32 @@ def test_auth(user_id: AuthUser) -> str:
 
 @v1.get("/user")
 def get_user_info(db: Database, user_id: AuthUser) -> dict:
-    display_name, picture = db.exec(select(User.display_name, User.picture).where(User.id == user_id)).one()
+    display_name, picture = db.execute(select(User.display_name, User.picture).where(User.id == user_id)).one()
     return {"id": user_id, "display_name": display_name, "picture": picture}
 
 @v1.patch("/user")
-def update_user_info(req: Annotated[UserUpdateRequest, Form()], db: Database, user_id: AuthUser) -> dict:
+def update_user_info(req: Annotated[UpdateUserInfoRequest, Form()], db: Database, user_id: AuthUser) -> dict:
     values = req.model_dump()
-    db.exec(update(User).where(User.id == user_id).values(values)); db.commit() # pyright: ignore[reportArgumentType]
+    db.execute(update(User).where(User.id == user_id).values(values)); db.commit()
     return values
 
 @v1.post("/server")
-def create_server(name: Annotated[str, Query(**SERVER_NAME_KW)], db: Database, user_id: AuthUser) -> Server:
-    server_id = gen_id()
-    server = Server(id=server_id, owner_id=user_id, name=name)
+def create_server(name: Annotated[str, Query(**SERVER_NAME_KW)], db: Database, user_id: AuthUser):
+    server = Server(id=gen_id(), owner_id=user_id, name=name)
     db.add(server)
-    db.add(Channel(id=gen_id(), server_id=server_id, name="Default channel"))
+    db.add(Channel(id=gen_id(), server_id=server.id, name="Default channel"))
     db.commit()
+    db.refresh(server)
     return server
 
 @v1.get("/server")
-def get_servers(db: Database, user_id: AuthUser) -> Sequence[Server]:
-    return db.exec(select(Server).join(Server_Member, isouter=True)
+def get_servers(db: Database, user_id: AuthUser):
+    return db.scalars(select(Server).join(Server_Member, isouter=True)
                    .where(or_(Server.owner_id == user_id, Server_Member.member_id == user_id)).distinct()).all()
 
 @v1.delete("/server")
 async def delete_server(server_id: str, db: Database, user_id: AuthUser) -> Response:
-    server = db.exec(select(Server).where(Server.id == server_id and Server.owner_id == user_id)).one_or_none()
+    server = db.execute(select(Server).where(Server.id == server_id and Server.owner_id == user_id)).scalar_one_or_none()
     if not server:
         raise HTTPException(401)
     
@@ -334,21 +347,20 @@ async def delete_server(server_id: str, db: Database, user_id: AuthUser) -> Resp
 @v1.post("/channel")
 async def create_channel(server_id: str, name: Annotated[str, Query(**CHANNEL_NAME_KW)], db: Database, user_id: IsServerOwner) -> Response:
     channel = Channel(id=gen_id(), server_id=server_id, name=name)
-    channel_dict = channel.model_dump()
     db.add(channel); db.commit()
 
-    await sio.emit("create_channel", channel_dict, room_path("server", server_id))
+    await sio.emit("create_channel", channel.to_dict(), room_path("server", server_id))
     return Response(status_code=202)
 
 @v1.get("/channel")
-async def get_channels(server_id: str, db: Database, user_id: IsServerMember, sid: Sid) -> Sequence[Channel]:
-    channels = db.exec(select(Channel).where(Channel.server_id == server_id)).all()
+async def get_channels(server_id: str, db: Database, user_id: IsServerMember, sid: Sid):
+    channels = db.scalars(select(Channel).where(Channel.server_id == server_id)).all()
     await enter_room(sid, "server", server_id)
     return channels
 
 @v1.delete("/channel")
 async def delete_channel(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner) -> Response:
-    channel = db.exec(select(Channel).where(Channel.id == channel_id and Channel.server_id == server_id)).one_or_none()
+    channel = db.execute(select(Channel).where(Channel.id == channel_id and Channel.server_id == server_id)).scalar_one_or_none()
     if not channel:
         raise HTTPException(401)
     
@@ -362,25 +374,25 @@ async def create_message(req: MessageCreateRequest, channel_id: str, db: Databas
     message = Message(id=gen_id(), sender_id=user_id, channel_id=channel_id, message=req.message)
     db.add(message); db.commit()
 
-    display_name, picture = db.exec(select(User.display_name, User.picture).where(User.id == user_id)).one()
+    display_name, picture = db.execute(select(User.display_name, User.picture).where(User.id == user_id)).one()
 
-    data = {**message.model_dump(), "display_name": display_name, "picture": picture}
+    data = {**message.to_dict(), "display_name": display_name, "picture": picture}
     await sio.emit("create_message", data, room_path("channel", channel_id))
     return Response(status_code=202)
 
 @v1.get("/message")
 async def get_messages(channel_id: str, db: Database, user_id: IsServerMember, sid: Sid) -> list:
-    results = db.exec(select(Message, User.display_name, User.picture).join(User)
+    results = db.execute(select(Message, User.display_name, User.picture).join(User)
                       .where(Message.channel_id == channel_id).order_by(desc(Message.id)).limit(50)).all()
     
     await enter_room(sid, "channel", channel_id)
 
-    return [{**message.model_dump(), "display_name": display_name, "picture": picture} 
+    return [{**message.to_dict(), "display_name": display_name, "picture": picture} 
             for message, display_name, picture in results]
 
 @v1.delete("/message")
 async def delete_message(message_id: str, db: Database, user_id: AuthUser) -> Response:
-    message = db.exec(select(Message).where(Message.id == message_id and Message.sender_id == user_id)).one_or_none()
+    message = db.execute(select(Message).where(Message.id == message_id and Message.sender_id == user_id)).scalar_one_or_none()
     if not message:
         raise HTTPException(401)
     
