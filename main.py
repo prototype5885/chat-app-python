@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError, NoResultFound
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
 from pydantic import BaseModel, EmailStr, Field, model_validator
 from argon2 import PasswordHasher, exceptions
-from socketio import AsyncServer, ASGIApp # type: ignore
+from socketio import AsyncServer, ASGIApp
 
 load_dotenv()
 if not os.getenv("JWT_SECRET"):
@@ -202,38 +202,15 @@ def is_server_member(db: Database, server_id: str, user_id: AuthUser) -> str:
 def is_in_permitted_role(db: Database, channel_id: str, user_id: AuthUser) -> str:
     return user_id
 
-async def socket_io_id(sid: Annotated[str | None, Header()] = None, token: str = Depends(APIKeyCookie(name="token"))):
-    if sid is None:
-        raise HTTPException(400, "No header with name 'Sid' found")
-    try:
-        session = await sio.get_session(sid)
-    except:
-        raise HTTPException(401, "No Socket.IO session is associated with received sid")
-    if session.get("token") != token:
-        raise HTTPException(401, "Received token and token associated with received sid don't match")
-    return sid
-
 Database = Annotated[Session, Depends(get_session)]
 AuthUser = Annotated[str, Depends(auth_user)]
 IsServerOwner = Annotated[str, Depends(is_server_owner)]
 IsServerMember = Annotated[str, Depends(is_server_member)]
 IsInPermittedRole = Annotated[str, Depends(is_in_permitted_role)]
-Sid = Annotated[str, Depends(socket_io_id)]
 
 # macros
 def room_path(room_type: RoomType, id: str):
     return f"{room_type}:{id}"
-
-async def enter_room(sid: str, room_type: RoomType, to_enter: str):
-    for room in sio.rooms(sid):
-        if room.startswith(room_type):
-            await sio.leave_room(sid, room)
-            print(f"sid: {sid} left room: {room}")
-            break
-
-    room = room_path(room_type, to_enter)
-    await sio.enter_room(sid, room)
-    print(f"sid: {sid} joined room: {room}")
 
 def gen_id() -> str:
     ulid = str(ULID())
@@ -244,22 +221,52 @@ def gen_id() -> str:
 def get_display_name(db: Database, user_id: str) -> str: # TODO not optimal solution, extra query
     return db.execute(select(User.display_name).where(User.id == user_id)).scalar_one()
 
-# socket.io paths
+# socket.io events
 @sio.event
-async def connect(sid, env):
+async def connect(sid: str, env):
     with Session(engine) as session:
         try:
-            token: str = env["HTTP_COOKIE"].split('token=', 1)[1]
             user_id = auth_user(session, env["HTTP_COOKIE"].split('token=', 1)[1])
         except:
             raise ConnectionRefusedError('authentication failed')
-
-    await sio.save_session(sid, {"token": token})
-    print(f"Socket connected: {sid} with token: {token}")
+        
+    await sio.save_session(sid, {"user_id": user_id})
+    print(f"User ID '{user_id}' connected to Socket.IO as sid '{sid}'")
 
 @sio.event
-async def disconnect(sid, reason):
-    print(f"Client Disconnected: {sid}, reason: {reason}")
+async def disconnect(sid: str, reason):
+    print(f"Sid '{sid}' disconnected from Socket.IO, reason: {reason}")
+
+@sio.event
+async def enter_room(sid: str, server_id: str, channel_id: str, room_type: str):
+    sio_session = await sio.get_session(sid)
+    user_id: str | None = sio_session.get("user_id")
+    if user_id is None:
+        raise Exception(f"sid '{sid}' is supposed to have a user_id value, but returned None")
+    
+    with Session(engine) as session:
+        try: 
+            is_server_member(session, server_id, user_id)
+        except Exception as e: 
+            await sio.emit("exception", str(e), to=sid)
+
+    for room in sio.rooms(sid): # leave previous room of same type
+        if room.startswith(room_type):
+            await sio.leave_room(sid, room)
+            print(f"sid: {sid} left room: {room}")
+            break
+
+    if room_type == "server": 
+        to_enter = server_id
+    elif room_type == "channel": 
+        to_enter = channel_id
+    else:
+        await sio.emit("exception", f"Wrong room type: '{room_type}', expected: '{RoomType}'", to=sid)
+        return
+
+    room = room_path(room_type, to_enter)
+    await sio.enter_room(sid, room)
+    print(f"sid: {sid} entered room: {room}")
 
 # FastAPI paths
 v1 = APIRouter(prefix="/api/v1")
@@ -353,9 +360,8 @@ async def create_channel(server_id: str, name: Annotated[str, Query(**CHANNEL_NA
     return Response(status_code=202)
 
 @v1.get("/channel")
-async def get_channels(server_id: str, db: Database, user_id: IsServerMember, sid: Sid):
+async def get_channels(server_id: str, db: Database, user_id: IsServerMember):
     channels = db.scalars(select(Channel).where(Channel.server_id == server_id)).all()
-    await enter_room(sid, "server", server_id)
     return channels
 
 @v1.delete("/channel")
@@ -381,12 +387,9 @@ async def create_message(req: MessageCreateRequest, channel_id: str, db: Databas
     return Response(status_code=202)
 
 @v1.get("/message")
-async def get_messages(channel_id: str, db: Database, user_id: IsServerMember, sid: Sid) -> list:
+async def get_messages(channel_id: str, db: Database, user_id: IsServerMember) -> list:
     results = db.execute(select(Message, User.display_name, User.picture).join(User)
                       .where(Message.channel_id == channel_id).order_by(desc(Message.id)).limit(50)).all()
-    
-    await enter_room(sid, "channel", channel_id)
-
     return [{**message.to_dict(), "display_name": display_name, "picture": picture} 
             for message, display_name, picture in results]
 
