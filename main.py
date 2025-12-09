@@ -10,7 +10,7 @@ from typing import Annotated, Any, Dict, List, Literal, Optional, Self
 from ulid import ULID
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.security import APIKeyCookie
-from sqlalchemy import CHAR, Boolean, DateTime, Engine, ForeignKey, String, create_engine, desc, event, func, or_, select, text, union, update
+from sqlalchemy import CHAR, Boolean, DateTime, Engine, ForeignKey, String, create_engine, desc, event, exists, func, or_, select, text, union, update
 from sqlalchemy.exc import IntegrityError, NoResultFound
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
 from pydantic import BaseModel, EmailStr, Field, model_validator
@@ -253,10 +253,9 @@ def is_server_owner(db: Database, server_id: str, user_id: AuthUser) -> str:
 IsServerOwner = Annotated[str, Depends(is_server_owner)]
 
 def is_server_member(db: Database, server_id: str, user_id: AuthUser) -> str:
-    result = db.execute(select(Server.owner_id, Server_Member.member_id).where(Server.id == server_id)
-                    .join(Server_Member, isouter=True)
-                    .where(or_(Server.owner_id == user_id, Server_Member.member_id == user_id))
-                    .distinct()).scalar_one_or_none()
+    is_owner = exists().where(Server.owner_id == user_id)
+    is_member = exists().where(Server_Member.member_id == user_id)
+    result = db.execute(select(is_owner | is_member)).scalar()
     if not result:
         raise HTTPException(401, "Not member or owner of server, which may not even exist")
     return user_id
