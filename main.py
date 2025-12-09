@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 import os
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 import jwt
 import secrets
@@ -306,11 +306,11 @@ def logout_user():
     response.delete_cookie(key="token")
     return response
 
-@v1.get("/test")
+@v1.get("/test", response_class=PlainTextResponse)
 def test():
     return "Hello world!"
 
-@v1.get("/test_auth")
+@v1.get("/test_auth", response_class=PlainTextResponse)
 def test_auth(user_id: AuthUser):
     return user_id
 
