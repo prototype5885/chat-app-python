@@ -6,7 +6,7 @@ import jwt
 import secrets
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, Dict, List, Literal, Optional, Self
+from typing import Annotated, Any, Dict, List, Literal, Optional, Self, Sequence
 from ulid import ULID
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.security import APIKeyCookie
@@ -326,7 +326,7 @@ def update_user_info(req: Annotated[UpdateUserInfoRequest, Form()], db: Database
     return values
 
 @v1.post("/server")
-def create_server(name: Annotated[str, Query(**SERVER_NAME_KW)], db: Database, user_id: AuthUser):
+def create_server(name: Annotated[str, Query(**SERVER_NAME_KW)], db: Database, user_id: AuthUser) -> Server:
     server = Server(id=str(ULID()), owner_id=user_id, name=name)
     db.add(server)
     db.add(Channel(id=str(ULID()), server_id=server.id, name="Default channel"))
@@ -335,7 +335,7 @@ def create_server(name: Annotated[str, Query(**SERVER_NAME_KW)], db: Database, u
     return server
 
 @v1.get("/server")
-def get_servers(db: Database, user_id: AuthUser):
+def get_servers(db: Database, user_id: AuthUser) -> Sequence[Server]:
     return db.scalars(select(Server).where(
         or_(Server.owner_id == user_id, Server.members.any(Server_Member.member_id == user_id)))).all()
 
@@ -359,7 +359,7 @@ async def create_channel(server_id: str, name: Annotated[str, Query(**CHANNEL_NA
     return Response(status_code=202)
 
 @v1.get("/channel")
-async def get_channels(server_id: str, db: Database, user_id: IsServerMember):
+async def get_channels(server_id: str, db: Database, user_id: IsServerMember) -> Sequence[Channel]:
     channels = db.scalars(select(Channel).where(Channel.server_id == server_id)).all()
     return channels
 
@@ -375,7 +375,7 @@ async def delete_channel(server_id: str, channel_id: str, db: Database, user_id:
     return Response(status_code=202)
 
 @v1.get("/member")
-def get_members(server_id: str, db: Database, _: IsServerMember):
+def get_members(server_id: str, db: Database, _: IsServerMember) -> list[dict]:
     owner_stmt = (select(User.id, User.display_name, User.picture).join(Server, Server.owner_id == User.id)
                   .where(Server.id == server_id))
     member_stmt = (select(User.id, User.display_name, User.picture).join(Server_Member, Server_Member.member_id == User.id)
@@ -397,7 +397,7 @@ async def create_message(req: MessageCreateRequest, channel_id: str, db: Databas
     return Response(status_code=202)
 
 @v1.get("/message")
-async def get_messages(channel_id: str, db: Database, user_id: IsServerMember) -> list:
+async def get_messages(channel_id: str, db: Database, user_id: IsServerMember) -> list[dict]:
     results = db.execute(select(Message, User.display_name, User.picture).join(User)
                       .where(Message.channel_id == channel_id).order_by(desc(Message.id)).limit(50)).all()
     return [{**message.to_dict(), "display_name": display_name, "picture": picture} 
@@ -415,26 +415,27 @@ async def delete_message(message_id: str, db: Database, user_id: AuthUser) -> Re
     return Response(status_code=202)
 
 @v1.post("/typing")
-async def typing(db: Database, value: Literal["start", "stop"], channel_id: str, user_id: IsServerMember):
+async def typing(db: Database, value: Literal["start", "stop"], channel_id: str, user_id: IsServerMember) -> Response:
     display_name = get_display_name(db, user_id)
     await sio.emit(f"{value}_typing", display_name, room_path("channel", channel_id))
+    return Response(status_code=202)
 
 app.include_router(v1)
 
 # static files
 @app.get("/login")
-def login_page():
+def login_page() -> FileResponse:
     return FileResponse("./static/login.html")
 
 @app.get("/register")
-def register_page():
+def register_page() -> FileResponse:
     return FileResponse("./static/register.html")
 
 if os.path.exists("./dist"):
     app.mount("/", StaticFiles(directory="dist", html=True))
 
 @app.exception_handler(404)
-def not_found(request: Request, exc):
+def not_found(request: Request, exc) -> FileResponse:
     response = FileResponse("./static/404.html")
     response.status_code = 404
     return response
