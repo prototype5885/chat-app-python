@@ -10,7 +10,7 @@ from typing import Annotated, Any, Dict, List, Literal, Optional, Self
 from ulid import ULID
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.security import APIKeyCookie
-from sqlalchemy import CHAR, Boolean, DateTime, Engine, ForeignKey, String, create_engine, desc, event, func, or_, select, text, update
+from sqlalchemy import CHAR, Boolean, DateTime, Engine, ForeignKey, String, create_engine, desc, event, func, or_, select, text, union, update
 from sqlalchemy.exc import IntegrityError, NoResultFound
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
 from pydantic import BaseModel, EmailStr, Field, model_validator
@@ -372,6 +372,17 @@ async def delete_channel(server_id: str, channel_id: str, db: Database, user_id:
 
     await sio.emit("delete_channel", channel_id, room_path("server", server_id))
     return Response(status_code=202)
+
+@v1.get("/member")
+def get_members(server_id: str, db: Database, _: IsServerMember):
+    owner_stmt = (select(User.id, User.display_name, User.picture).join(Server, Server.owner_id == User.id)
+                  .where(Server.id == server_id))
+    member_stmt = (select(User.id, User.display_name, User.picture).join(Server_Member, Server_Member.member_id == User.id)
+                   .where(Server_Member.server_id == server_id))
+    rows = db.execute(union(owner_stmt, member_stmt)).all()
+
+    return [{"user_id": user_id, "display_name": display_name, "picture": picture} 
+        for user_id, display_name, picture in rows]
 
 @v1.post("/message")
 async def create_message(req: MessageCreateRequest, channel_id: str, db: Database, user_id: IsServerMember) -> Response:
