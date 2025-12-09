@@ -162,6 +162,7 @@ class UpdateUserInfoRequest(BaseModel):
 def get_session():
     with Session(engine, expire_on_commit=False) as session:
         yield session
+Database = Annotated[Session, Depends(get_session)]
 
 def auth_user(db: Database, token: str = Depends(APIKeyCookie(name="token"))) -> str:
     try:
@@ -182,6 +183,7 @@ def auth_user(db: Database, token: str = Depends(APIKeyCookie(name="token"))) ->
         raise HTTPException(401, "User is banned")
 
     return user_id
+AuthUser = Annotated[str, Depends(auth_user)]
 
 def is_server_owner(db: Database, server_id: str, user_id: AuthUser) -> str:
     owner_id = db.scalar(select(Server.owner_id).where(Server.id == server_id and Server.owner_id == user_id))
@@ -189,6 +191,7 @@ def is_server_owner(db: Database, server_id: str, user_id: AuthUser) -> str:
         raise HTTPException(401, "Not owner of server, which may not even exist")
 
     return user_id
+IsServerOwner = Annotated[str, Depends(is_server_owner)]
 
 def is_server_member(db: Database, server_id: str, user_id: AuthUser) -> str:
     result = db.execute(select(Server.owner_id, Server_Member.member_id).where(Server.id == server_id)
@@ -198,14 +201,10 @@ def is_server_member(db: Database, server_id: str, user_id: AuthUser) -> str:
     if not result:
         raise HTTPException(401, "Not member or owner of server, which may not even exist")
     return user_id
+IsServerMember = Annotated[str, Depends(is_server_member)]
 
 def is_in_permitted_role(db: Database, channel_id: str, user_id: AuthUser) -> str:
     return user_id
-
-Database = Annotated[Session, Depends(get_session)]
-AuthUser = Annotated[str, Depends(auth_user)]
-IsServerOwner = Annotated[str, Depends(is_server_owner)]
-IsServerMember = Annotated[str, Depends(is_server_member)]
 IsInPermittedRole = Annotated[str, Depends(is_in_permitted_role)]
 
 # macros
