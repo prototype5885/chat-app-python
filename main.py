@@ -31,7 +31,6 @@ password_hasher = PasswordHasher()
 
 # field kwargs
 Kwargs = Dict[str, Any]
-# ULID_KW: Kwargs = {"min_length": 26, "max_length": 26, "sa_type": CHAR(26)}
 USERNAME_KW: Kwargs = {"min_length": 6, "max_length": 32}
 DISPLAY_NAME_KW: Kwargs = {"min_length": 1, "max_length": 64}
 PASSWORD_KW: Kwargs = {"min_length": 6, "max_length": 1024} 
@@ -129,12 +128,6 @@ class UpdateUserInfoRequest(BaseModel):
 # Macros
 def room_path(room_type: Literal["server", "channel"], id: str):
     return f"{room_type}:{id}"
-
-def gen_id() -> str:
-    ulid = str(ULID())
-    if len(ulid) != 26:
-        raise Exception(f"generated ULID {ulid} should contain exactly 26 characters, but is {len(ulid)}")
-    return ulid
 
 def get_display_name(db: Database, user_id: str) -> str: # TODO not optimal solution, extra query
     return db.execute(select(User.display_name).where(User.id == user_id)).scalar_one()
@@ -280,7 +273,7 @@ v1 = APIRouter(prefix="/api/v1")
 @v1.post("/user/register")
 def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database) -> Response:
     try:
-        user = User(id=gen_id(), email=req.email, username=req.username, display_name=req.username, 
+        user = User(id=str(ULID()), email=req.email, username=req.username, display_name=req.username, 
                     password=password_hasher.hash(req.password))
         db.add(user); db.commit()
     except IntegrityError:
@@ -300,7 +293,7 @@ def login_user(req: Annotated[UserLoginRequest, Form()], db: Database) -> Respon
 
     days: int = 14
     expires = datetime.now(timezone.utc) + timedelta(days=days)
-    encoded_jwt = jwt.encode({"user_id": str(user.id), "exp": expires}, JWT_SECRET, algorithm="HS256")
+    encoded_jwt = jwt.encode({"user_id": user.id, "exp": expires}, JWT_SECRET, algorithm="HS256")
 
     response = Response(status_code=303, headers={"Location": "/"})
     response.set_cookie(key="token", value=encoded_jwt, httponly=True, secure=True, samesite="lax", max_age=days * 24 * 3600)
@@ -333,9 +326,9 @@ def update_user_info(req: Annotated[UpdateUserInfoRequest, Form()], db: Database
 
 @v1.post("/server")
 def create_server(name: Annotated[str, Query(**SERVER_NAME_KW)], db: Database, user_id: AuthUser):
-    server = Server(id=gen_id(), owner_id=user_id, name=name)
+    server = Server(id=str(ULID()), owner_id=user_id, name=name)
     db.add(server)
-    db.add(Channel(id=gen_id(), server_id=server.id, name="Default channel"))
+    db.add(Channel(id=str(ULID()), server_id=server.id, name="Default channel"))
     db.commit()
     db.refresh(server)
     return server
@@ -358,7 +351,7 @@ async def delete_server(server_id: str, db: Database, user_id: AuthUser) -> Resp
 
 @v1.post("/channel")
 async def create_channel(server_id: str, name: Annotated[str, Query(**CHANNEL_NAME_KW)], db: Database, user_id: IsServerOwner) -> Response:
-    channel = Channel(id=gen_id(), server_id=server_id, name=name)
+    channel = Channel(id=str(ULID()), server_id=server_id, name=name)
     db.add(channel); db.commit()
 
     await sio.emit("create_channel", channel.to_dict(), room_path("server", server_id))
@@ -382,7 +375,7 @@ async def delete_channel(server_id: str, channel_id: str, db: Database, user_id:
 
 @v1.post("/message")
 async def create_message(req: MessageCreateRequest, channel_id: str, db: Database, user_id: IsServerMember) -> Response:
-    message = Message(id=gen_id(), sender_id=user_id, channel_id=channel_id, message=req.message)
+    message = Message(id=str(ULID()), sender_id=user_id, channel_id=channel_id, message=req.message)
     db.add(message); db.commit()
 
     display_name, picture = db.execute(select(User.display_name, User.picture).where(User.id == user_id)).one()
