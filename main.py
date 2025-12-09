@@ -247,7 +247,7 @@ def auth_user(db: Database, token: str = Depends(APIKeyCookie(name="token"))):
 AuthUser = Annotated[str, Depends(auth_user)]
 
 def is_server_owner(db: Database, server_id: str, user_id: AuthUser):
-    owner_id = db.scalar(select(Server.owner_id).where(Server.id == server_id and Server.owner_id == user_id))
+    owner_id = db.scalar(select(Server.owner_id).where(Server.id == server_id, Server.owner_id == user_id))
     if not owner_id:
         raise HTTPException(401, "Not owner of server, which may not even exist")
 
@@ -255,8 +255,8 @@ def is_server_owner(db: Database, server_id: str, user_id: AuthUser):
 IsServerOwner = Annotated[str, Depends(is_server_owner)]
 
 def is_server_member(db: Database, server_id: str, user_id: AuthUser):
-    is_owner = exists().where(Server.owner_id == user_id)
-    is_member = exists().where(Server_Member.member_id == user_id)
+    is_owner = exists().where(Server.id == server_id, Server.owner_id == user_id)
+    is_member = exists().where(Server_Member.server_id == server_id, Server_Member.member_id == user_id)
     result = db.execute(select(is_owner | is_member)).scalar()
     if not result:
         raise HTTPException(401, "Not member or owner of server, which may not even exist")
@@ -341,7 +341,7 @@ def get_servers(db: Database, user_id: AuthUser):
 
 @v1.delete("/server")
 async def delete_server(server_id: str, db: Database, user_id: AuthUser):
-    server = db.execute(select(Server).where(Server.id == server_id and Server.owner_id == user_id)).scalar_one_or_none()
+    server = db.execute(select(Server).where(Server.id == server_id, Server.owner_id == user_id)).scalar_one_or_none()
     if not server:
         raise HTTPException(401)
     
@@ -365,7 +365,7 @@ async def get_channels(server_id: str, db: Database, user_id: IsServerMember):
 
 @v1.delete("/channel")
 async def delete_channel(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner):
-    channel = db.execute(select(Channel).where(Channel.id == channel_id and Channel.server_id == server_id)).scalar_one_or_none()
+    channel = db.execute(select(Channel).where(Channel.id == channel_id, Channel.server_id == server_id)).scalar_one_or_none()
     if not channel:
         raise HTTPException(401)
     
@@ -405,7 +405,7 @@ async def get_messages(channel_id: str, db: Database, user_id: IsServerMember):
 
 @v1.delete("/message")
 async def delete_message(message_id: str, db: Database, user_id: AuthUser):
-    message = db.execute(select(Message).where(Message.id == message_id and Message.sender_id == user_id)).scalar_one_or_none()
+    message = db.execute(select(Message).where(Message.id == message_id, Message.sender_id == user_id)).scalar_one_or_none()
     if not message:
         raise HTTPException(401)
     
