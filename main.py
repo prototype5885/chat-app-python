@@ -339,7 +339,7 @@ def get_servers(db: Database, user_id: AuthUser):
     return db.scalars(select(Server).where(
         or_(Server.owner_id == user_id, Server.members.any(Server_Member.member_id == user_id)))).all()
 
-@v1.delete("/server")
+@v1.delete("/server", status_code=202, response_class=Response)
 async def delete_server(server_id: str, db: Database, user_id: AuthUser):
     server = db.execute(select(Server).where(Server.id == server_id, Server.owner_id == user_id)).scalar_one_or_none()
     if not server:
@@ -348,22 +348,20 @@ async def delete_server(server_id: str, db: Database, user_id: AuthUser):
     db.delete(server); db.commit()
     
     await sio.emit("delete_server", server_id, room_path("server", server_id))
-    return Response(status_code=202)
 
-@v1.post("/channel")
+@v1.post("/channel", status_code=202, response_class=Response)
 async def create_channel(server_id: str, name: Annotated[str, Query(**CHANNEL_NAME_KW)], db: Database, user_id: IsServerOwner):
     channel = Channel(id=str(ULID()), server_id=server_id, name=name)
     db.add(channel); db.commit()
 
     await sio.emit("create_channel", channel.to_dict(), room_path("server", server_id))
-    return Response(status_code=202)
 
 @v1.get("/channel")
 async def get_channels(server_id: str, db: Database, user_id: IsServerMember):
     channels = db.scalars(select(Channel).where(Channel.server_id == server_id)).all()
     return channels
 
-@v1.delete("/channel")
+@v1.delete("/channel", status_code=202, response_class=Response)
 async def delete_channel(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner):
     channel = db.execute(select(Channel).where(Channel.id == channel_id, Channel.server_id == server_id)).scalar_one_or_none()
     if not channel:
@@ -372,7 +370,6 @@ async def delete_channel(server_id: str, channel_id: str, db: Database, user_id:
     db.delete(channel); db.commit()
 
     await sio.emit("delete_channel", channel_id, room_path("server", server_id))
-    return Response(status_code=202)
 
 @v1.get("/member")
 def get_members(server_id: str, db: Database, _: IsServerMember):
@@ -385,7 +382,7 @@ def get_members(server_id: str, db: Database, _: IsServerMember):
     return [{"user_id": user_id, "display_name": display_name, "picture": picture} 
         for user_id, display_name, picture in rows]
 
-@v1.post("/message")
+@v1.post("/message", status_code=202, response_class=Response)
 async def create_message(req: MessageCreateRequest, channel_id: str, db: Database, user_id: IsServerMember):
     message = Message(id=str(ULID()), sender_id=user_id, channel_id=channel_id, message=req.message)
     db.add(message); db.commit()
@@ -394,7 +391,6 @@ async def create_message(req: MessageCreateRequest, channel_id: str, db: Databas
 
     data = {**message.to_dict(), "display_name": display_name, "picture": picture}
     await sio.emit("create_message", data, room_path("channel", channel_id))
-    return Response(status_code=202)
 
 @v1.get("/message")
 async def get_messages(channel_id: str, db: Database, user_id: IsServerMember):
@@ -403,7 +399,7 @@ async def get_messages(channel_id: str, db: Database, user_id: IsServerMember):
     return [{**message.to_dict(), "display_name": display_name, "picture": picture} 
             for message, display_name, picture in results]
 
-@v1.delete("/message")
+@v1.delete("/message", status_code=202, response_class=Response)
 async def delete_message(message_id: str, db: Database, user_id: AuthUser):
     message = db.execute(select(Message).where(Message.id == message_id, Message.sender_id == user_id)).scalar_one_or_none()
     if not message:
@@ -412,13 +408,11 @@ async def delete_message(message_id: str, db: Database, user_id: AuthUser):
     db.delete(message); db.commit()
 
     await sio.emit("delete_message", message.id, room_path("channel", message.channel_id))
-    return Response(status_code=202)
 
-@v1.post("/typing")
+@v1.post("/typing", status_code=202, response_class=Response)
 async def typing(db: Database, value: Literal["start", "stop"], channel_id: str, user_id: IsServerMember):
     display_name = get_display_name(db, user_id)
     await sio.emit(f"{value}_typing", display_name, room_path("channel", channel_id))
-    return Response(status_code=202)
 
 app.include_router(v1)
 
