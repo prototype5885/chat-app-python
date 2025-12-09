@@ -68,6 +68,7 @@ class Server(Base):
     
     user: Mapped["User"] = relationship(back_populates="servers")
     channels: Mapped[List["Channel"]] = relationship(back_populates="server", cascade="all, delete-orphan")
+    members: Mapped[List["Server_Member"]] = relationship(back_populates="server", cascade="all, delete-orphan")
 
 class Channel(Base):
     __tablename__ = "channels"
@@ -99,6 +100,7 @@ class Server_Member(Base):
     member_id: Mapped[str] = mapped_column(CHAR(26), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, index=True)
     member_since: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
+    server: Mapped["Server"] = relationship(back_populates="members")
 
 # Pydantic models:
 class UserRegisterRequest(BaseModel):
@@ -334,8 +336,8 @@ def create_server(name: Annotated[str, Query(**SERVER_NAME_KW)], db: Database, u
 
 @v1.get("/server")
 def get_servers(db: Database, user_id: AuthUser):
-    return db.scalars(select(Server).join(Server_Member, isouter=True)
-                   .where(or_(Server.owner_id == user_id, Server_Member.member_id == user_id)).distinct()).all()
+    return db.scalars(select(Server).where(
+        or_(Server.owner_id == user_id, Server.members.any(Server_Member.member_id == user_id)))).all()
 
 @v1.delete("/server")
 async def delete_server(server_id: str, db: Database, user_id: AuthUser) -> Response:
