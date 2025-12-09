@@ -6,7 +6,7 @@ import jwt
 import secrets
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, Dict, List, Literal, Optional, Self, Sequence
+from typing import Annotated, Any, Dict, List, Literal, Optional
 from ulid import ULID
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.security import APIKeyCookie
@@ -110,7 +110,7 @@ class UserRegisterRequest(BaseModel):
     password_repeat: str = Field(**PASSWORD_KW)
 
     @model_validator(mode="after")
-    def check_passwords_match(self) -> Self:
+    def check_passwords_match(self):
         if self.password != self.password_repeat:
             raise ValueError("passwords do not match")
         return self
@@ -131,7 +131,7 @@ class UpdateUserInfoRequest(BaseModel):
 def room_path(room_type: Literal["server", "channel"], id: str):
     return f"{room_type}:{id}"
 
-def get_display_name(db: Database, user_id: str) -> str: # TODO not optimal solution, extra query
+def get_display_name(db: Database, user_id: str): # TODO not optimal solution, extra query
     return db.execute(select(User.display_name).where(User.id == user_id)).scalar_one()
 
 
@@ -225,7 +225,7 @@ def get_session():
         yield session
 Database = Annotated[Session, Depends(get_session)]
 
-def auth_user(db: Database, token: str = Depends(APIKeyCookie(name="token"))) -> str:
+def auth_user(db: Database, token: str = Depends(APIKeyCookie(name="token"))):
     try:
         jwt_payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
     except:
@@ -246,7 +246,7 @@ def auth_user(db: Database, token: str = Depends(APIKeyCookie(name="token"))) ->
     return user_id
 AuthUser = Annotated[str, Depends(auth_user)]
 
-def is_server_owner(db: Database, server_id: str, user_id: AuthUser) -> str:
+def is_server_owner(db: Database, server_id: str, user_id: AuthUser):
     owner_id = db.scalar(select(Server.owner_id).where(Server.id == server_id and Server.owner_id == user_id))
     if not owner_id:
         raise HTTPException(401, "Not owner of server, which may not even exist")
@@ -254,7 +254,7 @@ def is_server_owner(db: Database, server_id: str, user_id: AuthUser) -> str:
     return user_id
 IsServerOwner = Annotated[str, Depends(is_server_owner)]
 
-def is_server_member(db: Database, server_id: str, user_id: AuthUser) -> str:
+def is_server_member(db: Database, server_id: str, user_id: AuthUser):
     is_owner = exists().where(Server.owner_id == user_id)
     is_member = exists().where(Server_Member.member_id == user_id)
     result = db.execute(select(is_owner | is_member)).scalar()
@@ -263,7 +263,7 @@ def is_server_member(db: Database, server_id: str, user_id: AuthUser) -> str:
     return user_id
 IsServerMember = Annotated[str, Depends(is_server_member)]
 
-def is_in_permitted_role(db: Database, channel_id: str, user_id: AuthUser) -> str:
+def is_in_permitted_role(db: Database, channel_id: str, user_id: AuthUser):
     return user_id
 IsInPermittedRole = Annotated[str, Depends(is_in_permitted_role)]
 
@@ -272,7 +272,7 @@ IsInPermittedRole = Annotated[str, Depends(is_in_permitted_role)]
 v1 = APIRouter(prefix="/api/v1")
 
 @v1.post("/user/register")
-def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database) -> Response:
+def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database):
     try:
         user = User(id=str(ULID()), email=req.email, username=req.username, display_name=req.username, 
                     password=password_hasher.hash(req.password))
@@ -283,7 +283,7 @@ def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database) -> 
     return Response(status_code=303, headers={"Location": "/login"})
 
 @v1.post("/user/login")
-def login_user(req: Annotated[UserLoginRequest, Form()], db: Database) -> Response:
+def login_user(req: Annotated[UserLoginRequest, Form()], db: Database):
     user = db.scalar(select(User).where(User.email == req.email))
     if not user:
         raise HTTPException(401)
@@ -301,32 +301,32 @@ def login_user(req: Annotated[UserLoginRequest, Form()], db: Database) -> Respon
     return response
 
 @v1.get("/user/logout")
-def logout_user() -> Response:
+def logout_user():
     response = Response(status_code=303, headers={"Location": "/login"})
     response.delete_cookie(key="token")
     return response
 
 @v1.get("/test")
-def test() -> str:
+def test():
     return "Hello world!"
 
 @v1.get("/test_auth")
-def test_auth(user_id: AuthUser) -> str:
+def test_auth(user_id: AuthUser):
     return user_id
 
 @v1.get("/user")
-def get_user_info(db: Database, user_id: AuthUser) -> dict:
+def get_user_info(db: Database, user_id: AuthUser):
     display_name, picture = db.execute(select(User.display_name, User.picture).where(User.id == user_id)).one()
     return {"id": user_id, "display_name": display_name, "picture": picture}
 
 @v1.patch("/user")
-def update_user_info(req: Annotated[UpdateUserInfoRequest, Form()], db: Database, user_id: AuthUser) -> dict:
+def update_user_info(req: Annotated[UpdateUserInfoRequest, Form()], db: Database, user_id: AuthUser):
     values = req.model_dump()
     db.execute(update(User).where(User.id == user_id).values(values)); db.commit()
     return values
 
 @v1.post("/server")
-def create_server(name: Annotated[str, Query(**SERVER_NAME_KW)], db: Database, user_id: AuthUser) -> Server:
+def create_server(name: Annotated[str, Query(**SERVER_NAME_KW)], db: Database, user_id: AuthUser):
     server = Server(id=str(ULID()), owner_id=user_id, name=name)
     db.add(server)
     db.add(Channel(id=str(ULID()), server_id=server.id, name="Default channel"))
@@ -335,12 +335,12 @@ def create_server(name: Annotated[str, Query(**SERVER_NAME_KW)], db: Database, u
     return server
 
 @v1.get("/server")
-def get_servers(db: Database, user_id: AuthUser) -> Sequence[Server]:
+def get_servers(db: Database, user_id: AuthUser):
     return db.scalars(select(Server).where(
         or_(Server.owner_id == user_id, Server.members.any(Server_Member.member_id == user_id)))).all()
 
 @v1.delete("/server")
-async def delete_server(server_id: str, db: Database, user_id: AuthUser) -> Response:
+async def delete_server(server_id: str, db: Database, user_id: AuthUser):
     server = db.execute(select(Server).where(Server.id == server_id and Server.owner_id == user_id)).scalar_one_or_none()
     if not server:
         raise HTTPException(401)
@@ -351,7 +351,7 @@ async def delete_server(server_id: str, db: Database, user_id: AuthUser) -> Resp
     return Response(status_code=202)
 
 @v1.post("/channel")
-async def create_channel(server_id: str, name: Annotated[str, Query(**CHANNEL_NAME_KW)], db: Database, user_id: IsServerOwner) -> Response:
+async def create_channel(server_id: str, name: Annotated[str, Query(**CHANNEL_NAME_KW)], db: Database, user_id: IsServerOwner):
     channel = Channel(id=str(ULID()), server_id=server_id, name=name)
     db.add(channel); db.commit()
 
@@ -359,12 +359,12 @@ async def create_channel(server_id: str, name: Annotated[str, Query(**CHANNEL_NA
     return Response(status_code=202)
 
 @v1.get("/channel")
-async def get_channels(server_id: str, db: Database, user_id: IsServerMember) -> Sequence[Channel]:
+async def get_channels(server_id: str, db: Database, user_id: IsServerMember):
     channels = db.scalars(select(Channel).where(Channel.server_id == server_id)).all()
     return channels
 
 @v1.delete("/channel")
-async def delete_channel(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner) -> Response:
+async def delete_channel(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner):
     channel = db.execute(select(Channel).where(Channel.id == channel_id and Channel.server_id == server_id)).scalar_one_or_none()
     if not channel:
         raise HTTPException(401)
@@ -375,7 +375,7 @@ async def delete_channel(server_id: str, channel_id: str, db: Database, user_id:
     return Response(status_code=202)
 
 @v1.get("/member")
-def get_members(server_id: str, db: Database, _: IsServerMember) -> list[dict]:
+def get_members(server_id: str, db: Database, _: IsServerMember):
     owner_stmt = (select(User.id, User.display_name, User.picture).join(Server, Server.owner_id == User.id)
                   .where(Server.id == server_id))
     member_stmt = (select(User.id, User.display_name, User.picture).join(Server_Member, Server_Member.member_id == User.id)
@@ -386,7 +386,7 @@ def get_members(server_id: str, db: Database, _: IsServerMember) -> list[dict]:
         for user_id, display_name, picture in rows]
 
 @v1.post("/message")
-async def create_message(req: MessageCreateRequest, channel_id: str, db: Database, user_id: IsServerMember) -> Response:
+async def create_message(req: MessageCreateRequest, channel_id: str, db: Database, user_id: IsServerMember):
     message = Message(id=str(ULID()), sender_id=user_id, channel_id=channel_id, message=req.message)
     db.add(message); db.commit()
 
@@ -397,14 +397,14 @@ async def create_message(req: MessageCreateRequest, channel_id: str, db: Databas
     return Response(status_code=202)
 
 @v1.get("/message")
-async def get_messages(channel_id: str, db: Database, user_id: IsServerMember) -> list[dict]:
+async def get_messages(channel_id: str, db: Database, user_id: IsServerMember):
     results = db.execute(select(Message, User.display_name, User.picture).join(User)
                       .where(Message.channel_id == channel_id).order_by(desc(Message.id)).limit(50)).all()
     return [{**message.to_dict(), "display_name": display_name, "picture": picture} 
             for message, display_name, picture in results]
 
 @v1.delete("/message")
-async def delete_message(message_id: str, db: Database, user_id: AuthUser) -> Response:
+async def delete_message(message_id: str, db: Database, user_id: AuthUser):
     message = db.execute(select(Message).where(Message.id == message_id and Message.sender_id == user_id)).scalar_one_or_none()
     if not message:
         raise HTTPException(401)
@@ -415,7 +415,7 @@ async def delete_message(message_id: str, db: Database, user_id: AuthUser) -> Re
     return Response(status_code=202)
 
 @v1.post("/typing")
-async def typing(db: Database, value: Literal["start", "stop"], channel_id: str, user_id: IsServerMember) -> Response:
+async def typing(db: Database, value: Literal["start", "stop"], channel_id: str, user_id: IsServerMember):
     display_name = get_display_name(db, user_id)
     await sio.emit(f"{value}_typing", display_name, room_path("channel", channel_id))
     return Response(status_code=202)
@@ -424,18 +424,18 @@ app.include_router(v1)
 
 # static files
 @app.get("/login")
-def login_page() -> FileResponse:
+def login_page():
     return FileResponse("./static/login.html")
 
 @app.get("/register")
-def register_page() -> FileResponse:
+def register_page():
     return FileResponse("./static/register.html")
 
 if os.path.exists("./dist"):
     app.mount("/", StaticFiles(directory="dist", html=True))
 
 @app.exception_handler(404)
-def not_found(request: Request, exc) -> FileResponse:
+def not_found(request: Request, exc):
     response = FileResponse("./static/404.html")
     response.status_code = 404
     return response
