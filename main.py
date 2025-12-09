@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, List, Literal, Optional, Self
 from ulid import ULID
-from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request, Response, Header
+from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.security import APIKeyCookie
 from sqlalchemy import CHAR, Boolean, DateTime, Engine, ForeignKey, String, create_engine, desc, event, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError, NoResultFound
@@ -27,46 +27,7 @@ else:
     JWT_SECRET = os.environ["JWT_SECRET"]
     print("Loaded JWT_SECRET from .env")
 
-sqlite_filename = "database/database.db"
-db_url = f"sqlite:///{sqlite_filename}"
-connect_args = {}
-
-if db_url.startswith("sqlite"): 
-    os.makedirs(os.path.dirname(sqlite_filename), exist_ok=True)
-    connect_args = {"check_same_thread": False}
-
-engine = create_engine(url=db_url, connect_args=connect_args, echo=True)
-
-if engine.url.drivername == "sqlite": # runs on every connection to sqlite
-    @event.listens_for(Engine, "connect")
-    def set_sqlite_pragma(dbapi_connection, connection_record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON;")
-        cursor.execute("PRAGMA synchronous=NORMAL;")
-        cursor.close()
-
-class Base(DeclarativeBase):
-    def to_dict(self):
-        return {field.name:getattr(self, field.name) for field in self.__table__.c}
-
-@asynccontextmanager
-async def lifespan(app: FastAPI): # runs on start or before shutdown
-    Base.metadata.create_all(engine)
-    if engine.url.drivername == "sqlite":
-        with engine.connect() as db:
-            db.execute(text("PRAGMA journal_mode=WAL;"))
-    yield
-    # code after yield runs before shutdown
-
-app = FastAPI(lifespan=lifespan)
 password_hasher = PasswordHasher()
-
-# socket.io
-sio = AsyncServer(cors_allowed_origins='*',async_mode='asgi')
-app.mount("/socket.io", ASGIApp(socketio_server=sio, other_asgi_app=app))
-   
-# types
-RoomType = Literal["server", "channel"]
 
 # field kwargs
 Kwargs = Dict[str, Any]
@@ -78,7 +39,12 @@ SERVER_NAME_KW: Kwargs = {"min_length": 1, "max_length": 64}
 CHANNEL_NAME_KW: Kwargs = {"min_length": 1, "max_length": 32}
 MESSAGE_KW: Kwargs = {"min_length": 1, "max_length": 4096}
 
-# models:
+
+# SQLAlchemy models:
+class Base(DeclarativeBase):
+    def to_dict(self):
+        return {field.name:getattr(self, field.name) for field in self.__table__.c}
+    
 class User(Base):
     __tablename__ = "users"
     id: Mapped[str] = mapped_column(CHAR(26), primary_key=True)
@@ -134,7 +100,8 @@ class Server_Member(Base):
     member_id: Mapped[str] = mapped_column(CHAR(26), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, index=True)
     member_since: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
-# DTOs:
+
+# Pydantic models:
 class UserRegisterRequest(BaseModel):
     username: str = Field(**USERNAME_KW)
     email: EmailStr
@@ -157,6 +124,105 @@ class MessageCreateRequest(BaseModel):
 class UpdateUserInfoRequest(BaseModel):
     display_name: Optional[str] = Field(**DISPLAY_NAME_KW)
     picture: Optional[str] = None
+
+
+# Macros
+def room_path(room_type: Literal["server", "channel"], id: str):
+    return f"{room_type}:{id}"
+
+def gen_id() -> str:
+    ulid = str(ULID())
+    if len(ulid) != 26:
+        raise Exception(f"generated ULID {ulid} should contain exactly 26 characters, but is {len(ulid)}")
+    return ulid
+
+def get_display_name(db: Database, user_id: str) -> str: # TODO not optimal solution, extra query
+    return db.execute(select(User.display_name).where(User.id == user_id)).scalar_one()
+
+
+# Database setup
+sqlite_filename = "database/database.db"
+db_url = f"sqlite:///{sqlite_filename}"
+connect_args = {}
+
+if db_url.startswith("sqlite"): 
+    os.makedirs(os.path.dirname(sqlite_filename), exist_ok=True)
+    connect_args = {"check_same_thread": False}
+
+engine = create_engine(url=db_url, connect_args=connect_args, echo=True)
+
+if engine.url.drivername == "sqlite": # runs on every connection to sqlite
+    @event.listens_for(Engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON;")
+        cursor.execute("PRAGMA synchronous=NORMAL;")
+        cursor.close()
+
+
+# FastAPI setup
+@asynccontextmanager
+async def lifespan(app: FastAPI): # runs on start or before shutdown
+    Base.metadata.create_all(engine)
+    if engine.url.drivername == "sqlite":
+        with engine.connect() as db:
+            db.execute(text("PRAGMA journal_mode=WAL;"))
+    yield
+    # code after yield runs before shutdown
+
+app = FastAPI(lifespan=lifespan)
+
+
+# Socket.IO
+sio = AsyncServer(cors_allowed_origins='*', async_mode='asgi')
+app.mount("/socket.io", ASGIApp(socketio_server=sio, other_asgi_app=app))
+
+@sio.event
+async def connect(sid: str, env):
+    with Session(engine) as session:
+        try:
+            user_id = auth_user(session, env["HTTP_COOKIE"].split('token=', 1)[1])
+        except:
+            raise ConnectionRefusedError('authentication failed')
+        
+    await sio.save_session(sid, {"user_id": user_id})
+    print(f"User ID '{user_id}' connected to Socket.IO as sid '{sid}'")
+
+@sio.event
+async def disconnect(sid: str, reason):
+    print(f"Sid '{sid}' disconnected from Socket.IO, reason: {reason}")
+
+@sio.event
+async def enter_room(sid: str, server_id: str, channel_id: str, room_type: str):
+    sio_session = await sio.get_session(sid)
+    user_id: str | None = sio_session.get("user_id")
+    if user_id is None:
+        raise Exception(f"sid '{sid}' is supposed to have a user_id value, but returned None")
+    
+    with Session(engine) as session:
+        try: 
+            is_server_member(session, server_id, user_id)
+        except Exception as e: 
+            await sio.emit("exception", str(e), to=sid)
+
+    for room in sio.rooms(sid): # leave previous room of same type
+        if room.startswith(room_type):
+            await sio.leave_room(sid, room)
+            print(f"sid: {sid} left room: {room}")
+            break
+
+    if room_type == "server": 
+        to_enter = server_id
+    elif room_type == "channel": 
+        to_enter = channel_id
+    else:
+        await sio.emit("exception", f"Wrong room type received: '{room_type}'", to=sid)
+        return
+
+    room = room_path(room_type, to_enter)
+    await sio.enter_room(sid, room)
+    print(f"sid: {sid} entered room: {room}")
+
 
 # middlewares:
 def get_session():
@@ -207,67 +273,8 @@ def is_in_permitted_role(db: Database, channel_id: str, user_id: AuthUser) -> st
     return user_id
 IsInPermittedRole = Annotated[str, Depends(is_in_permitted_role)]
 
-# macros
-def room_path(room_type: RoomType, id: str):
-    return f"{room_type}:{id}"
 
-def gen_id() -> str:
-    ulid = str(ULID())
-    if len(ulid) != 26:
-        raise Exception(f"generated ULID {ulid} should contain exactly 26 characters, but is {len(ulid)}")
-    return ulid
-
-def get_display_name(db: Database, user_id: str) -> str: # TODO not optimal solution, extra query
-    return db.execute(select(User.display_name).where(User.id == user_id)).scalar_one()
-
-# socket.io events
-@sio.event
-async def connect(sid: str, env):
-    with Session(engine) as session:
-        try:
-            user_id = auth_user(session, env["HTTP_COOKIE"].split('token=', 1)[1])
-        except:
-            raise ConnectionRefusedError('authentication failed')
-        
-    await sio.save_session(sid, {"user_id": user_id})
-    print(f"User ID '{user_id}' connected to Socket.IO as sid '{sid}'")
-
-@sio.event
-async def disconnect(sid: str, reason):
-    print(f"Sid '{sid}' disconnected from Socket.IO, reason: {reason}")
-
-@sio.event
-async def enter_room(sid: str, server_id: str, channel_id: str, room_type: str):
-    sio_session = await sio.get_session(sid)
-    user_id: str | None = sio_session.get("user_id")
-    if user_id is None:
-        raise Exception(f"sid '{sid}' is supposed to have a user_id value, but returned None")
-    
-    with Session(engine) as session:
-        try: 
-            is_server_member(session, server_id, user_id)
-        except Exception as e: 
-            await sio.emit("exception", str(e), to=sid)
-
-    for room in sio.rooms(sid): # leave previous room of same type
-        if room.startswith(room_type):
-            await sio.leave_room(sid, room)
-            print(f"sid: {sid} left room: {room}")
-            break
-
-    if room_type == "server": 
-        to_enter = server_id
-    elif room_type == "channel": 
-        to_enter = channel_id
-    else:
-        await sio.emit("exception", f"Wrong room type: '{room_type}', expected: '{RoomType}'", to=sid)
-        return
-
-    room = room_path(room_type, to_enter)
-    await sio.enter_room(sid, room)
-    print(f"sid: {sid} entered room: {room}")
-
-# FastAPI paths
+# FastAPI
 v1 = APIRouter(prefix="/api/v1")
 
 @v1.post("/user/register")
@@ -286,7 +293,6 @@ def login_user(req: Annotated[UserLoginRequest, Form()], db: Database) -> Respon
     user = db.scalar(select(User).where(User.email == req.email))
     if not user:
         raise HTTPException(401)
-    
     try:
         password_hasher.verify(user.password, req.password)
     except exceptions.VerifyMismatchError:
