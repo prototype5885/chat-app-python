@@ -279,8 +279,6 @@ def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database):
         db.add(user); db.commit()
     except IntegrityError:
         raise HTTPException(409)
-    
-    return Response(status_code=303, headers={"Location": "/login"})
 
 @v1.post("/user/login")
 def login_user(req: Annotated[UserLoginRequest, Form()], db: Database):
@@ -296,13 +294,13 @@ def login_user(req: Annotated[UserLoginRequest, Form()], db: Database):
     expires = datetime.now(timezone.utc) + timedelta(days=days)
     encoded_jwt = jwt.encode({"user_id": user.id, "exp": expires}, JWT_SECRET, algorithm="HS256")
 
-    response = Response(status_code=303, headers={"Location": "/"})
+    response = Response()
     response.set_cookie(key="token", value=encoded_jwt, httponly=True, secure=True, samesite="lax", max_age=days * 24 * 3600)
     return response
 
 @v1.get("/user/logout")
 def logout_user():
-    response = Response(status_code=303, headers={"Location": "/login"})
+    response = Response()
     response.delete_cookie(key="token")
     return response
 
