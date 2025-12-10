@@ -60,6 +60,7 @@ class User(Base):
     picture: Mapped[Optional[str]]
     password: Mapped[str]
     banned: Mapped[bool] = mapped_column(default=False)
+    custom_status: Mapped[Optional[str]]
     
     servers: Mapped[List["Server"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     messages: Mapped[List["Message"]] = relationship(back_populates="user", cascade="all, delete-orphan")
@@ -385,14 +386,14 @@ async def delete_channel(server_id: str, channel_id: str, db: Database, user_id:
 
 @v1.get("/member")
 def get_members(server_id: str, db: Database, _: IsServerMember):
-    owner_stmt = (select(User.id, User.display_name, User.picture).join(Server, Server.owner_id == User.id)
+    owner_stmt = (select(User.id, User.display_name, User.picture, User.custom_status).join(Server, Server.owner_id == User.id)
                   .where(Server.id == server_id))
-    member_stmt = (select(User.id, User.display_name, User.picture).join(Server_Member, Server_Member.member_id == User.id)
+    member_stmt = (select(User.id, User.display_name, User.picture, User.custom_status).join(Server_Member, Server_Member.member_id == User.id)
                    .where(Server_Member.server_id == server_id))
     rows = db.execute(union(owner_stmt, member_stmt)).all()
 
-    return [{"user_id": user_id, "display_name": display_name, "picture": picture} 
-        for user_id, display_name, picture in rows]
+    return [{"user_id": user_id, "display_name": display_name, "picture": picture, "custom_status": custom_status} 
+        for user_id, display_name, picture, custom_status in rows]
 
 @v1.post("/message", status_code=202, response_class=Response)
 async def create_message(req: MessageCreateRequest, channel_id: str, db: Database, user_id: IsServerMember):
