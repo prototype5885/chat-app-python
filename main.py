@@ -162,7 +162,7 @@ if db_url.startswith("sqlite"):
     os.makedirs(os.path.dirname(sqlite_filename), exist_ok=True)
     connect_args = {"check_same_thread": False}
 
-engine = create_engine(url=db_url, connect_args=connect_args, echo=True)
+engine = create_engine(url=db_url, connect_args=connect_args, echo=False)
 
 if engine.url.drivername == "sqlite": # runs on every connection to sqlite
     @event.listens_for(Engine, "connect")
