@@ -271,7 +271,7 @@ IsInPermittedRole = Annotated[str, Depends(is_in_permitted_role)]
 # FastAPI
 v1 = APIRouter(prefix="/api/v1")
 
-@v1.post("/user/register")
+@v1.post("/user/register", status_code=204, response_class=Response)
 def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database):
     try:
         user = User(id=str(ULID()), email=req.email, username=req.username, display_name=req.username, 
@@ -280,8 +280,8 @@ def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database):
     except IntegrityError:
         raise HTTPException(409)
 
-@v1.post("/user/login")
-def login_user(req: Annotated[UserLoginRequest, Form()], db: Database):
+@v1.post("/user/login", status_code=204, response_class=Response)
+def login_user(req: Annotated[UserLoginRequest, Form()], db: Database, response: Response):
     user = db.scalar(select(User).where(User.email == req.email))
     if not user:
         raise HTTPException(401)
@@ -293,18 +293,13 @@ def login_user(req: Annotated[UserLoginRequest, Form()], db: Database):
     days: int = 14
     expires = datetime.now(timezone.utc) + timedelta(days=days)
     encoded_jwt = jwt.encode({"user_id": user.id, "exp": expires}, JWT_SECRET, algorithm="HS256")
-
-    response = Response()
     response.set_cookie(key="token", value=encoded_jwt, httponly=True, secure=True, samesite="lax", max_age=days * 24 * 3600)
-    return response
 
-@v1.get("/user/logout")
-def logout_user():
-    response = Response()
+@v1.get("/user/logout", status_code=204, response_class=Response)
+def logout_user(response: Response):
     response.delete_cookie(key="token")
-    return response
 
-@v1.delete("/user/delete")
+@v1.delete("/user/delete", status_code=204, response_class=Response)
 def delete_user(db: Database, user_id: AuthUser):
     user = db.execute(select(User).where(User.id == user_id)).scalar_one()
     db.delete(user); db.commit()
