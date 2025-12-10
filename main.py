@@ -304,6 +304,11 @@ def logout_user():
     response.delete_cookie(key="token")
     return response
 
+@v1.delete("/user/delete")
+def delete_user(db: Database, user_id: AuthUser):
+    user = db.execute(select(User).where(User.id == user_id)).scalar_one()
+    db.delete(user); db.commit()
+
 @v1.get("/test", response_class=PlainTextResponse)
 def test():
     return "Hello world!"
