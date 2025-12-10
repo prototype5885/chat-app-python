@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 import os
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -29,15 +30,21 @@ else:
 
 password_hasher = PasswordHasher()
 
-# field kwargs
-Kwargs = Dict[str, Any]
-USERNAME_KW: Kwargs = {"min_length": 6, "max_length": 32}
-DISPLAY_NAME_KW: Kwargs = {"min_length": 1, "max_length": 64}
-PASSWORD_KW: Kwargs = {"min_length": 6, "max_length": 1024} 
-SERVER_NAME_KW: Kwargs = {"min_length": 1, "max_length": 64}
-CHANNEL_NAME_KW: Kwargs = {"min_length": 1, "max_length": 32}
-MESSAGE_KW: Kwargs = {"min_length": 1, "max_length": 4096}
+# Text field lengths
+@dataclass(frozen=True)
+class FieldLength:
+    min: int
+    max: int
+    def kwargs(self) -> Dict[str, Any]:
+        return {"min_length": self.min,"max_length": self.max}
 
+ULID_LEN = 26
+USERNAME_LEN = FieldLength(6, 32)
+DISPLAY_NAME_LEN = FieldLength(1, 64)
+PASSWORD_LEN = FieldLength(6, 1024)
+SERVER_NAME_LEN = FieldLength(1, 64)
+CHANNEL_NAME_LEN = FieldLength(1, 32)
+MESSAGE_LEN = FieldLength(1, 4096)
 
 # SQLAlchemy models:
 class Base(DeclarativeBase):
@@ -46,10 +53,10 @@ class Base(DeclarativeBase):
     
 class User(Base):
     __tablename__ = "users"
-    id: Mapped[str] = mapped_column(CHAR(26), primary_key=True)
-    username: Mapped[str] = mapped_column(index=True, unique=True)
+    id: Mapped[str] = mapped_column(CHAR(ULID_LEN), primary_key=True)
+    username: Mapped[str] = mapped_column(String(USERNAME_LEN.max),index=True, unique=True)
     email: Mapped[str] = mapped_column(index=True, unique=True)
-    display_name: Mapped[str]
+    display_name: Mapped[str] = mapped_column(String(DISPLAY_NAME_LEN.max))
     picture: Mapped[Optional[str]]
     password: Mapped[str]
     banned: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -59,9 +66,9 @@ class User(Base):
 
 class Server(Base):
     __tablename__ = "servers"
-    id: Mapped[str] = mapped_column(CHAR(26), primary_key=True)
-    owner_id: Mapped[str] = mapped_column(CHAR(26), ForeignKey("users.id", ondelete="CASCADE"))
-    name: Mapped[str]
+    id: Mapped[str] = mapped_column(CHAR(ULID_LEN), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(CHAR(ULID_LEN), ForeignKey("users.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(SERVER_NAME_LEN.max))
     picture: Mapped[Optional[str]]
     banner: Mapped[Optional[str]]
     roles: Mapped[Optional[str]]
@@ -72,9 +79,9 @@ class Server(Base):
 
 class Channel(Base):
     __tablename__ = "channels"
-    id: Mapped[str] = mapped_column(CHAR(26), primary_key=True)
-    server_id: Mapped[str] = mapped_column(String, ForeignKey("servers.id", ondelete="CASCADE"))
-    name: Mapped[str]
+    id: Mapped[str] = mapped_column(CHAR(ULID_LEN), primary_key=True)
+    server_id: Mapped[str] = mapped_column(CHAR(ULID_LEN), ForeignKey("servers.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(CHANNEL_NAME_LEN.max))
     # private: Mapped[bool] = mapped_column(Boolean, default=False)
     # allowed_roles: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     # allowed_users: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -84,10 +91,10 @@ class Channel(Base):
 
 class Message(Base):
     __tablename__ = "messages"
-    id: Mapped[str] = mapped_column(CHAR(26), primary_key=True)
-    sender_id: Mapped[str] = mapped_column(CHAR(26), ForeignKey("users.id", ondelete="CASCADE"))
-    channel_id: Mapped[str] = mapped_column(CHAR(26), ForeignKey("channels.id", ondelete="CASCADE"))
-    message: Mapped[str] = mapped_column(String(4096))
+    id: Mapped[str] = mapped_column(CHAR(ULID_LEN), primary_key=True)
+    sender_id: Mapped[str] = mapped_column(CHAR(ULID_LEN), ForeignKey("users.id", ondelete="CASCADE"))
+    channel_id: Mapped[str] = mapped_column(CHAR(ULID_LEN), ForeignKey("channels.id", ondelete="CASCADE"))
+    message: Mapped[str] = mapped_column(String(MESSAGE_LEN.max))
     attachments: Mapped[Optional[str]] = mapped_column(default=None)
     edited: Mapped[Optional[bool]] = mapped_column(default=None)
     
@@ -96,18 +103,28 @@ class Message(Base):
 
 class Server_Member(Base):
     __tablename__ = "server_members"
-    server_id: Mapped[str] = mapped_column(CHAR(26), ForeignKey("servers.id", ondelete="CASCADE"), primary_key=True, index=True)
-    member_id: Mapped[str] = mapped_column(CHAR(26), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, index=True)
+    server_id: Mapped[str] = mapped_column(CHAR(ULID_LEN), ForeignKey("servers.id", ondelete="CASCADE"), primary_key=True, index=True)
+    member_id: Mapped[str] = mapped_column(CHAR(ULID_LEN), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, index=True)
     member_since: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     server: Mapped["Server"] = relationship(back_populates="members")
 
+
+# Pydantic types:
+UsernameStr = Annotated[str, Field(**USERNAME_LEN.kwargs())]
+PasswordStr = Annotated[str, Field(**PASSWORD_LEN.kwargs())]
+DisplayNameStr = Annotated[str, Field(**DISPLAY_NAME_LEN.kwargs())]
+ServerNameStr = Annotated[str, Field(**SERVER_NAME_LEN.kwargs())]
+ChannelNameStr = Annotated[str, Field(**CHANNEL_NAME_LEN.kwargs())]
+MessageStr = Annotated[str, Field(**MESSAGE_LEN.kwargs())]
+
+
 # Pydantic models:
 class UserRegisterRequest(BaseModel):
-    username: str = Field(**USERNAME_KW)
+    username: UsernameStr
     email: EmailStr
-    password: str = Field(**PASSWORD_KW)
-    password_repeat: str = Field(**PASSWORD_KW)
+    password: PasswordStr
+    password_repeat: PasswordStr
 
     @model_validator(mode="after")
     def check_passwords_match(self):
@@ -117,13 +134,13 @@ class UserRegisterRequest(BaseModel):
 
 class UserLoginRequest(BaseModel):
     email: EmailStr
-    password: str = Field(**PASSWORD_KW)
+    password: PasswordStr
 
 class MessageCreateRequest(BaseModel):
-    message: str = Field(**MESSAGE_KW)
+    message: MessageStr
 
 class UpdateUserInfoRequest(BaseModel):
-    display_name: Optional[str] = Field(**DISPLAY_NAME_KW)
+    display_name: Optional[DisplayNameStr] = None
     picture: Optional[str] = None
 
 
@@ -324,7 +341,7 @@ def update_user_info(req: Annotated[UpdateUserInfoRequest, Form()], db: Database
     return values
 
 @v1.post("/server")
-def create_server(name: Annotated[str, Query(**SERVER_NAME_KW)], db: Database, user_id: AuthUser):
+def create_server(name: ServerNameStr, db: Database, user_id: AuthUser):
     server = Server(id=str(ULID()), owner_id=user_id, name=name)
     db.add(server)
     db.add(Channel(id=str(ULID()), server_id=server.id, name="Default channel"))
@@ -348,7 +365,7 @@ async def delete_server(server_id: str, db: Database, user_id: AuthUser):
     await sio.emit("delete_server", server_id, room_path("server", server_id))
 
 @v1.post("/channel", status_code=202, response_class=Response)
-async def create_channel(server_id: str, name: Annotated[str, Query(**CHANNEL_NAME_KW)], db: Database, user_id: IsServerOwner):
+async def create_channel(server_id: str, name: ChannelNameStr, db: Database, user_id: IsServerOwner):
     channel = Channel(id=str(ULID()), server_id=server_id, name=name)
     db.add(channel); db.commit()
 
