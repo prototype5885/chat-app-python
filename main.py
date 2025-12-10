@@ -59,7 +59,7 @@ class User(Base):
     display_name: Mapped[str] = mapped_column(String(DISPLAY_NAME_LEN.max))
     picture: Mapped[Optional[str]]
     password: Mapped[str]
-    banned: Mapped[bool] = mapped_column(Boolean, default=False)
+    banned: Mapped[bool] = mapped_column(default=False)
     
     servers: Mapped[List["Server"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     messages: Mapped[List["Message"]] = relationship(back_populates="user", cascade="all, delete-orphan")
@@ -252,12 +252,10 @@ def auth_user(db: Database, token: str = Depends(APIKeyCookie(name="token"))):
     if not isinstance(user_id, str):
         raise HTTPException(401, "Error getting user_id from jwt")
 
-    try:
-        banned = db.execute(select(User.banned).where(User.id == user_id)).scalar_one()
-    except NoResultFound:
+    banned = db.scalar(select(User.banned).where(User.id == user_id))
+    if banned is None:
         raise HTTPException(401, "User id from jwt doesn't exist in database")
-    
-    if banned:
+    if banned is True:
         raise HTTPException(401, "User is banned")
 
     return user_id
