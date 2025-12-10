@@ -6,11 +6,11 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "argon2-cffi>=25.1.0",
-    "fastapi[standard-no-fastapi-cloud-cli]>=0.124.0",
+    "fastapi[standard-no-fastapi-cloud-cli]>=0.124.1",
     "pyjwt>=2.10.1",
     "python-dotenv>=1.2.1",
     "python-socketio>=5.15.0",
     "python-ulid>=3.1.0",
-    "sqlalchemy>=2.0.44",
+    "sqlalchemy>=2.0.45",
     "uvicorn>=0.38.0",
 ]
