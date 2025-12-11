@@ -9,10 +9,10 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, List, Literal, Optional
 from ulid import ULID
-from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.security import APIKeyCookie
-from sqlalchemy import CHAR, Boolean, DateTime, Engine, ForeignKey, String, create_engine, desc, event, exists, func, or_, select, text, union, update
-from sqlalchemy.exc import IntegrityError, NoResultFound
+from sqlalchemy import CHAR, DateTime, Engine, ForeignKey, String, create_engine, desc, event, exists, func, or_, select, text, union, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
 from pydantic import BaseModel, EmailStr, Field, model_validator
 from argon2 import PasswordHasher, exceptions
@@ -111,6 +111,9 @@ class Server_Member(Base):
     server: Mapped["Server"] = relationship(back_populates="members")
 
 
+# Types:
+RoomType = Literal["server", "channel"]
+
 # Pydantic types:
 UsernameStr = Annotated[str, Field(**USERNAME_LEN.kwargs())]
 PasswordStr = Annotated[str, Field(**PASSWORD_LEN.kwargs())]
@@ -118,7 +121,6 @@ DisplayNameStr = Annotated[str, Field(**DISPLAY_NAME_LEN.kwargs())]
 ServerNameStr = Annotated[str, Field(**SERVER_NAME_LEN.kwargs())]
 ChannelNameStr = Annotated[str, Field(**CHANNEL_NAME_LEN.kwargs())]
 MessageStr = Annotated[str, Field(**MESSAGE_LEN.kwargs())]
-
 
 # Pydantic models:
 class UserRegisterRequest(BaseModel):
@@ -145,8 +147,8 @@ class UpdateUserInfoRequest(BaseModel):
     picture: Optional[str] = None
 
 
-# Macros
-def room_path(room_type: Literal["server", "channel"], id: str):
+# Helpers
+def room_path(room_type: RoomType, id: str):
     return f"{room_type}:{id}"
 
 def get_display_name(db: Database, user_id: str): # TODO not optimal solution, extra query
@@ -190,6 +192,28 @@ app = FastAPI(lifespan=lifespan)
 sio = AsyncServer(cors_allowed_origins='*', async_mode='asgi')
 app.mount("/socket.io", ASGIApp(socketio_server=sio, other_asgi_app=app))
 
+# Socket.IO helpers
+async def sio_is_server_member(sid: str, server_id: str) -> str | None:
+    sio_session = await sio.get_session(sid)
+    user_id = sio_session.get("user_id")
+    assert type(user_id) == str
+    
+    with Session(engine) as session:
+        try: is_server_member(session, server_id, user_id)
+        except Exception as e: return str(e)
+    
+async def subscribe(sid: str, room_type: RoomType, target: str):
+    for room in sio.rooms(sid): 
+        if room.startswith(room_type): 
+            await sio.leave_room(sid, room)
+            print(f"sid '{sid}' unsubscribed from: '{room}'")
+            break
+
+    room = room_path(room_type, target)
+    await sio.enter_room(sid, room)
+    print(f"sid '{sid}' subscribed to '{room}'")
+
+# Socket.IO events
 @sio.event
 async def connect(sid: str, env):
     with Session(engine) as session:
@@ -206,38 +230,17 @@ async def disconnect(sid: str, reason):
     print(f"Sid '{sid}' disconnected from Socket.IO, reason: {reason}")
 
 @sio.event
-async def enter_room(sid: str, server_id: str, channel_id: str, room_type: str):
-    sio_session = await sio.get_session(sid)
-    user_id: str | None = sio_session.get("user_id")
-    if user_id is None:
-        raise Exception(f"sid '{sid}' is supposed to have a user_id value, but returned None")
-    
-    with Session(engine) as session:
-        try: 
-            is_server_member(session, server_id, user_id)
-        except Exception as e: 
-            await sio.emit("exception", str(e), to=sid)
+async def subscribe_to_channel_list(sid: str, server_id: str):
+    if issue := await sio_is_server_member(sid, server_id): return issue
+    await subscribe(sid, "server", server_id)
 
-    for room in sio.rooms(sid): # leave previous room of same type
-        if room.startswith(room_type):
-            await sio.leave_room(sid, room)
-            print(f"sid: {sid} left room: {room}")
-            break
-
-    if room_type == "server": 
-        to_enter = server_id
-    elif room_type == "channel": 
-        to_enter = channel_id
-    else:
-        await sio.emit("exception", f"Wrong room type received: '{room_type}'", to=sid)
-        return
-
-    room = room_path(room_type, to_enter)
-    await sio.enter_room(sid, room)
-    print(f"sid: {sid} entered room: {room}")
+@sio.event
+async def subscribe_to_message_list(sid: str, server_id: str, channel_id: str):
+    if issue := await sio_is_server_member(sid, server_id): return issue
+    await subscribe(sid, "channel", channel_id)
 
 
-# middlewares:
+# FastAPI middlewares:
 def get_session():
     with Session(engine, expire_on_commit=False) as session:
         yield session
@@ -284,7 +287,7 @@ def is_in_permitted_role(db: Database, channel_id: str, user_id: AuthUser):
 IsInPermittedRole = Annotated[str, Depends(is_in_permitted_role)]
 
 
-# FastAPI
+# FastAPI paths
 v1 = APIRouter(prefix="/api/v1")
 
 @v1.post("/user/register", status_code=204, response_class=Response)
@@ -429,7 +432,7 @@ async def typing(db: Database, value: Literal["start", "stop"], channel_id: str,
 
 app.include_router(v1)
 
-# static files
+# Static file handlers
 @app.get("/login")
 def login_page():
     return FileResponse("./static/login.html")
