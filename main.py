@@ -433,19 +433,5 @@ async def typing(db: Database, value: Literal["start", "stop"], channel_id: str,
 app.include_router(v1)
 
 # Static file handlers
-@app.get("/login")
-def login_page():
-    return FileResponse("./static/login.html")
-
-@app.get("/register")
-def register_page():
-    return FileResponse("./static/register.html")
-
-if os.path.exists("./dist"):
+if os.path.exists("./dist"): # serve svelte frontend from dist folder
     app.mount("/", StaticFiles(directory="dist", html=True))
-
-@app.exception_handler(404)
-def not_found(request: Request, exc):
-    response = FileResponse("./static/404.html")
-    response.status_code = 404
-    return response
