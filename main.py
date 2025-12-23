@@ -327,14 +327,14 @@ def delete_user(db: Database, user_id: AuthUser):
 def test():
     return "Hello world!"
 
-@v1.get("/test_auth", response_class=PlainTextResponse)
-def test_auth(user_id: AuthUser):
+@v1.get("/user_id", response_class=PlainTextResponse)
+def get_user_id(user_id: AuthUser):
     return user_id
 
 @v1.get("/user")
 def get_user_info(db: Database, user_id: AuthUser):
     display_name, picture = db.execute(select(User.display_name, User.picture).where(User.id == user_id)).one()
-    return {"id": user_id, "display_name": display_name, "picture": picture}
+    return {"display_name": display_name, "picture": picture}
 
 @v1.patch("/user")
 def update_user_info(req: Annotated[UpdateUserInfoRequest, Form()], db: Database, user_id: AuthUser):
