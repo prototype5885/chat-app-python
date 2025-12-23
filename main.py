@@ -146,6 +146,10 @@ class UpdateUserInfoRequest(BaseModel):
     display_name: Optional[DisplayNameStr] = None
     picture: Optional[str] = None
 
+class UpdateServerInfoRequest(BaseModel):
+    name: Optional[ServerNameStr] = None
+    picture: Optional[str] = None
+
 
 # Helpers
 def room_path(room_type: RoomType, id: str):
@@ -352,6 +356,19 @@ def create_server(name: ServerNameStr, db: Database, user_id: AuthUser):
     return server
 
 @v1.get("/server")
+def get_server_info(server_id: str, db: Database, user_id: AuthUser):
+    server = db.scalar(select(Server).where(Server.id == server_id, Server.owner_id == user_id))
+    if not server:
+        raise HTTPException(401)
+    return server
+
+@v1.patch("/server")
+def update_server_info(server_id: str, req: Annotated[UpdateServerInfoRequest, Form()], db: Database, user_id: IsServerOwner):
+    values = req.model_dump()
+    db.execute(update(Server).where(Server.id == server_id, Server.owner_id ==  user_id).values(values)); db.commit()
+    return values
+
+@v1.get("/servers")
 def get_servers(db: Database, user_id: AuthUser):
     return db.scalars(select(Server).where(
         or_(Server.owner_id == user_id, Server.members.any(Server_Member.member_id == user_id)))).all()
