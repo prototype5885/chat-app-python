@@ -150,6 +150,9 @@ class UpdateServerInfoRequest(BaseModel):
     name: Optional[ServerNameStr] = None
     picture: Optional[str] = None
 
+class UpdateChannelInfoRequest(BaseModel):
+    name: Optional[ChannelNameStr] = None
+
 
 # Helpers
 def room_path(room_type: RoomType, id: str):
@@ -391,6 +394,23 @@ async def create_channel(server_id: str, name: ChannelNameStr, db: Database, use
     await sio.emit("create_channel", channel.to_dict(), room_path("server", server_id))
 
 @v1.get("/channel")
+def get_channel_info(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner):
+    channel = db.scalar(select(Channel).where(Channel.id == channel_id, Channel.server_id == server_id))
+    if not channel:
+        raise HTTPException(401)
+    return channel
+
+@v1.patch("/channel")
+async def update_channel_info(server_id: str, channel_id: str, req: Annotated[UpdateChannelInfoRequest, Form()], db: Database, user_id: IsServerOwner):
+    values = req.model_dump()
+    channel = db.scalar(update(Channel).where(Channel.id == channel_id, Channel.server_id == server_id).values(values).returning(Channel)); 
+    if channel is None:
+        raise HTTPException(401)
+    db.commit()
+    await sio.emit("modify_channel", channel.to_dict(), room_path("server", server_id))
+    return values
+
+@v1.get("/channels")
 async def get_channels(server_id: str, db: Database, user_id: IsServerMember):
     return db.scalars(select(Channel).where(Channel.server_id == server_id)).all()
 
