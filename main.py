@@ -1,15 +1,13 @@
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-import os
+from pathlib import Path
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-import jwt
-import secrets
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, List, Literal, Optional
 from ulid import ULID
-from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Response, UploadFile
 from fastapi.security import APIKeyCookie
 from sqlalchemy import CHAR, DateTime, Engine, ForeignKey, String, create_engine, desc, event, exists, func, or_, select, text, union, update
 from sqlalchemy.exc import IntegrityError
@@ -17,6 +15,13 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,
 from pydantic import BaseModel, EmailStr, Field, model_validator
 from argon2 import PasswordHasher, exceptions
 from socketio import AsyncServer, ASGIApp
+from PIL import Image
+import os
+import io
+import hashlib
+import aiofiles
+import jwt
+import secrets
 
 load_dotenv()
 if not os.getenv("JWT_SECRET"):
@@ -349,6 +354,41 @@ def update_user_info(req: Annotated[UpdateUserInfoRequest, Form()], db: Database
     db.execute(update(User).where(User.id == user_id).values(values)); db.commit()
     return values
 
+@v1.post("/user/avatar")
+async def update_user_avatar(avatar: UploadFile, db: Database, user_id: AuthUser):
+    with Image.open(avatar.file) as img:
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+            
+        s = min(img.size) # size 
+        w, h = img.size # width, height 
+        img = img.crop(((w - s) // 2, (h - s) // 2, (w + s) // 2, (h + s) // 2))
+
+        full_img = img.resize((256, 256), Image.Resampling.LANCZOS)
+        full_buffer = io.BytesIO()
+        full_img.save(full_buffer, format="WEBP", quality=50)
+        full_bytes = full_buffer.getvalue()
+        
+        small_img = img.resize((80, 80), Image.Resampling.LANCZOS)
+        small_buffer = io.BytesIO()
+        small_img.save(small_buffer, format="WEBP", quality=50)
+        small_bytes = small_buffer.getvalue()
+
+    file_hash = hashlib.sha256(full_bytes).hexdigest()
+    
+    full_path = f"public/avatars/{file_hash}.webp"
+    small_path = f"public/avatars/small/{file_hash}.webp"
+    
+    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+    os.makedirs(os.path.dirname(small_path), exist_ok=True)
+
+    async with aiofiles.open(full_path, "wb") as f:
+        await f.write(full_bytes)
+    async with aiofiles.open(small_path, "wb") as f:
+        await f.write(small_bytes)
+
+    db.execute(update(User).where(User.id == user_id).values(picture=file_hash)); db.commit()
+
 @v1.post("/server")
 def create_server(name: ServerNameStr, db: Database, user_id: AuthUser):
     server = Server(id=str(ULID()), owner_id=user_id, name=name)
@@ -467,8 +507,43 @@ async def typing(db: Database, value: Literal["start", "stop"], channel_id: str,
     display_name = get_display_name(db, user_id)
     await sio.emit(f"{value}_typing", display_name, room_path("channel", channel_id))
 
+@v1.post("/upload", response_class=Response)
+async def upload_attachment(attachment: UploadFile, user_id: AuthUser):
+    temp_path = f"public/attachments/temp_{attachment.filename}"
+    os.makedirs(os.path.dirname(temp_path), exist_ok=True)
+
+    async with aiofiles.open(temp_path, "wb") as tmp:
+        while chunk := await attachment.read(4 * 1024 * 1024): # 4 mb chunks
+            hashlib.sha256().update(chunk)
+            await tmp.write(chunk)
+
+    hash_name = hashlib.sha256().hexdigest()
+    _, ext = os.path.splitext(str(attachment.filename))
+    final_path = f"public/attachments/{hash_name}{ext}"
+
+    if os.path.exists(final_path):
+        os.remove(temp_path)
+    else:
+        os.rename(temp_path, final_path)
+
+    return final_path
+
 app.include_router(v1)
 
-# Static file handlers
-if os.path.exists("./dist"): # serve svelte frontend from dist folder
+# Svelte file handlers
+if os.path.exists("./dist"): # serve svelte frontend from dist folder, if it's there
     app.mount("/", StaticFiles(directory="dist", html=True))
+
+# Public file handlers
+@app.get("/public/avatars/{file_path:path}")
+async def serve_avatar(file_path: str, user_id: AuthUser):
+    base_dir = Path("public/avatars").resolve()
+    requested_path = (base_dir / file_path).resolve()
+
+    if not str(requested_path).startswith(str(base_dir)):
+        raise HTTPException(403)
+
+    if not requested_path.is_file():
+        raise HTTPException(404)
+
+    return FileResponse(requested_path, headers={"Cache-Control": "private, max-age=31536000, immutable"}) 
