@@ -22,7 +22,7 @@ import hashlib
 import aiofiles
 import jwt
 import secrets
-import re
+import asyncio
 
 # Constants
 load_dotenv()
@@ -34,8 +34,6 @@ if not os.getenv("JWT_SECRET"):
 else:
     JWT_SECRET = os.environ["JWT_SECRET"]
     print("Loaded JWT_SECRET from .env")
-
-IMMUTABLE_CACHE_HEADER = {"Cache-Control": "private, max-age=31536000, immutable"}
 
 
 password_hasher = PasswordHasher()
@@ -173,13 +171,13 @@ def room_path(room_type: RoomType, id: str):
 def get_display_name(db: Database, user_id: str): # TODO not optimal solution, extra query
     return db.execute(select(User.display_name).where(User.id == user_id)).scalar_one()
 
-async def save_picture(file: BinaryIO, path: str, resolution: tuple[int, int], square: bool | None = None, name: str | None = None):
+async def save_picture(file: BinaryIO, path: str, resolution: tuple[int, int], crop_square: bool | None = None, name: str | None = None):
     try:
         with Image.open(file) as img:
             if img.mode != "RGB":
                 img = img.convert("RGB")
             
-            if square:
+            if crop_square:
                 s = min(img.size) # size 
                 w, h = img.size # width, height 
                 img = img.crop(((w - s) // 2, (h - s) // 2, (w + s) // 2, (h + s) // 2))
@@ -193,7 +191,7 @@ async def save_picture(file: BinaryIO, path: str, resolution: tuple[int, int], s
 
     file_hash: str | None = None
     if name:
-        path = f"{path}/{name}.webp"
+        path = f"{path}/{name}"
     else:
         file_hash = hashlib.sha256(bytes).hexdigest()
         path = f"{path}/{file_hash}.webp"
@@ -396,9 +394,8 @@ async def update_user_info(req: Annotated[UpdateUserInfoRequest, Form()], db: Da
     return values
 
 @v1.post("/user/avatar", status_code=202, response_class=Response)
-async def update_user_avatar(avatar: UploadFile, db: Database, user_id: AuthUser):
-    file_hash = await save_picture(avatar.file, "public/avatars", (256, 256), square=True)
-    await save_picture(avatar.file, "public/avatars/small", (80, 80), square=True, name=file_hash)
+async def update_user_picture(avatar: UploadFile, db: Database, user_id: AuthUser):
+    file_hash = await save_picture(avatar.file, "public/avatars", (256, 256), crop_square=True)
     db.execute(update(User).where(User.id == user_id).values(picture=file_hash)); db.commit()
 
 @v1.post("/server")
@@ -424,8 +421,8 @@ async def update_server_info(server_id: str, req: Annotated[UpdateServerInfoRequ
     return values
 
 @v1.post("/server/avatar", status_code=202, response_class=Response)
-async def update_server_icon(avatar: UploadFile, server_id: str, db: Database, user_id: AuthUser):
-    file_hash = await save_picture(avatar.file, "public/server/icons", (96, 96), square=True)
+async def update_server_picture(avatar: UploadFile, server_id: str, db: Database, user_id: AuthUser):
+    file_hash = await save_picture(avatar.file, "public/avatars", (256, 256), crop_square=True)
     db.execute(update(Server).where(Server.id == server_id, Server.owner_id == user_id).values(picture=file_hash)); db.commit()
 
 @v1.get("/servers")
@@ -551,23 +548,27 @@ if os.path.exists("./dist"): # serve svelte frontend from dist folder, if it's t
     app.mount("/", StaticFiles(directory="dist", html=True))
 
 # Public file handlers
+serve_avatars_lock = asyncio.Lock()
 @app.get("/avatars/{name:path}", response_class=FileResponse)
-async def serve_user_avatars(user_id: AuthUser, name: PictureName, size: Optional[Literal["small"]] = None): 
+async def serve_avatars(user_id: AuthUser, name: PictureName, size: Optional[Literal["80", "96"]] = None): 
     base_dir = FilePath("public/avatars").resolve()
-    if size == "small":
-        file_path = (base_dir / "small" / name).resolve()
-    else:
-        file_path = (base_dir / name).resolve()
+    original_file_path = (base_dir / name).resolve()
+    
+    if size: # return resized picture if it exists, otherwise create it
+        resized_file_path = (base_dir / size / name).resolve()
+        if not resized_file_path.is_file():
+            async with serve_avatars_lock:
+                if not resized_file_path.is_file():
+                    if not original_file_path.is_file():
+                        raise HTTPException(404)
+                    os.makedirs(os.path.dirname(resized_file_path), exist_ok=True)
+                    async with aiofiles.open(original_file_path, "rb") as img_file:
+                        bytes = await img_file.read()
+                        await save_picture(io.BytesIO(bytes), f"public/avatars/{size}", (int(size), int(size)), name=name)
+        file_path = resized_file_path
+    else: # return full sized picture
+        if not original_file_path.is_file():
+            raise HTTPException(404)
+        file_path = original_file_path
 
-    if not file_path.is_file():
-        raise HTTPException(404)
-    return FileResponse(file_path, headers=IMMUTABLE_CACHE_HEADER)
-
-@app.get("/server/icons/{name:path}", response_class=FileResponse)
-async def serve_server_icons(user_id: AuthUser, name: PictureName):
-    base_dir = FilePath("public/server/icons").resolve()
-    file_path = (base_dir / name).resolve()
-
-    if not file_path.is_file():
-        raise HTTPException(404)
-    return FileResponse(file_path, headers=IMMUTABLE_CACHE_HEADER)
+    return FileResponse(file_path, headers={"Cache-Control": "private, max-age=2592000, immutable"})
