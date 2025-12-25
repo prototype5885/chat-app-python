@@ -22,6 +22,7 @@ import hashlib
 import aiofiles
 import jwt
 import secrets
+import re
 
 load_dotenv()
 if not os.getenv("JWT_SECRET"):
@@ -537,15 +538,19 @@ if os.path.exists("./dist"): # serve svelte frontend from dist folder, if it's t
     app.mount("/", StaticFiles(directory="dist", html=True))
 
 # Public file handlers
-@app.get("/public/avatars/{file_path:path}")
-async def serve_avatar(file_path: str, user_id: AuthUser):
+@app.get("/avatars/{file_name:path}", response_class=FileResponse)
+async def serve_avatar(user_id: AuthUser, file_name: str, size: Optional[Literal["small"]] = None):
+    if not re.fullmatch(r"[a-f0-9]{64}\.webp", file_name):
+        raise HTTPException(422)
+        
     base_dir = Path("public/avatars").resolve()
-    requested_path = (base_dir / file_path).resolve()
 
-    if not str(requested_path).startswith(str(base_dir)):
-        raise HTTPException(403)
+    if size == "small":
+        file_path = (base_dir / "small" / file_name).resolve()
+    else:
+        file_path = (base_dir / file_name).resolve()
 
-    if not requested_path.is_file():
+    if not file_path.is_file():
         raise HTTPException(404)
 
-    return FileResponse(requested_path, headers={"Cache-Control": "private, max-age=31536000, immutable"}) 
+    return FileResponse(file_path, headers={"Cache-Control": "private, max-age=31536000, immutable"})
