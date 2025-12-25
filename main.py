@@ -356,23 +356,26 @@ def update_user_info(req: Annotated[UpdateUserInfoRequest, Form()], db: Database
 
 @v1.post("/user/avatar")
 async def update_user_avatar(avatar: UploadFile, db: Database, user_id: AuthUser):
-    with Image.open(avatar.file) as img:
-        if img.mode in ("RGBA", "P"):
-            img = img.convert("RGB")
-            
-        s = min(img.size) # size 
-        w, h = img.size # width, height 
-        img = img.crop(((w - s) // 2, (h - s) // 2, (w + s) // 2, (h + s) // 2))
+    try:
+        with Image.open(avatar.file) as img:
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+                
+            s = min(img.size) # size 
+            w, h = img.size # width, height 
+            img = img.crop(((w - s) // 2, (h - s) // 2, (w + s) // 2, (h + s) // 2))
 
-        full_img = img.resize((256, 256), Image.Resampling.LANCZOS)
-        full_buffer = io.BytesIO()
-        full_img.save(full_buffer, format="WEBP", quality=50)
-        full_bytes = full_buffer.getvalue()
-        
-        small_img = img.resize((80, 80), Image.Resampling.LANCZOS)
-        small_buffer = io.BytesIO()
-        small_img.save(small_buffer, format="WEBP", quality=50)
-        small_bytes = small_buffer.getvalue()
+            full_img = img.resize((256, 256), Image.Resampling.LANCZOS)
+            full_buffer = io.BytesIO()
+            full_img.save(full_buffer, format="WEBP", quality=75)
+            full_bytes = full_buffer.getvalue()
+            
+            small_img = img.resize((80, 80), Image.Resampling.LANCZOS)
+            small_buffer = io.BytesIO()
+            small_img.save(small_buffer, format="WEBP", quality=75)
+            small_bytes = small_buffer.getvalue()
+    except: 
+        raise HTTPException(422)
 
     file_hash = hashlib.sha256(full_bytes).hexdigest()
     
