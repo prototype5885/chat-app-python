@@ -1,13 +1,13 @@
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path as FilePath
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, BinaryIO, Dict, List, Literal, Optional
 from ulid import ULID
-from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Response, UploadFile, Path
 from fastapi.security import APIKeyCookie
 from sqlalchemy import CHAR, DateTime, Engine, ForeignKey, String, create_engine, desc, event, exists, func, or_, select, text, union, update
 from sqlalchemy.exc import IntegrityError
@@ -24,6 +24,7 @@ import jwt
 import secrets
 import re
 
+# Constants
 load_dotenv()
 if not os.getenv("JWT_SECRET"):
     with open(".env", 'w') as f:
@@ -34,7 +35,11 @@ else:
     JWT_SECRET = os.environ["JWT_SECRET"]
     print("Loaded JWT_SECRET from .env")
 
+IMMUTABLE_CACHE_HEADER = {"Cache-Control": "private, max-age=31536000, immutable"}
+
+
 password_hasher = PasswordHasher()
+
 
 # Text field lengths
 @dataclass(frozen=True)
@@ -127,6 +132,7 @@ DisplayNameStr = Annotated[str, Field(**DISPLAY_NAME_LEN.kwargs())]
 ServerNameStr = Annotated[str, Field(**SERVER_NAME_LEN.kwargs())]
 ChannelNameStr = Annotated[str, Field(**CHANNEL_NAME_LEN.kwargs())]
 MessageStr = Annotated[str, Field(**MESSAGE_LEN.kwargs())]
+PictureName = Annotated[str, Path(pattern=r"^[a-f0-9]{64}\.webp$")]
 
 # Pydantic models:
 class UserRegisterRequest(BaseModel):
@@ -166,6 +172,40 @@ def room_path(room_type: RoomType, id: str):
 
 def get_display_name(db: Database, user_id: str): # TODO not optimal solution, extra query
     return db.execute(select(User.display_name).where(User.id == user_id)).scalar_one()
+
+async def save_picture(file: BinaryIO, path: str, resolution: tuple[int, int], square: bool | None = None, name: str | None = None):
+    try:
+        with Image.open(file) as img:
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            
+            if square:
+                s = min(img.size) # size 
+                w, h = img.size # width, height 
+                img = img.crop(((w - s) // 2, (h - s) // 2, (w + s) // 2, (h + s) // 2))
+
+            img = img.resize(resolution, Image.Resampling.LANCZOS)
+            buffer = io.BytesIO()
+            img.save(buffer, format="WEBP", quality=75)
+            bytes = buffer.getvalue()
+    except: 
+        raise HTTPException(422)
+
+    file_hash: str | None = None
+    if name:
+        path = f"{path}/{name}.webp"
+    else:
+        file_hash = hashlib.sha256(bytes).hexdigest()
+        path = f"{path}/{file_hash}.webp"
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    async with aiofiles.open(path, "wb") as f:
+        await f.write(bytes)
+
+    if file_hash: 
+        return file_hash
+    return None
 
 
 # Database setup
@@ -355,42 +395,10 @@ async def update_user_info(req: Annotated[UpdateUserInfoRequest, Form()], db: Da
     db.execute(update(User).where(User.id == user_id).values(values)); db.commit()
     return values
 
-@v1.post("/user/avatar")
+@v1.post("/user/avatar", status_code=202, response_class=Response)
 async def update_user_avatar(avatar: UploadFile, db: Database, user_id: AuthUser):
-    try:
-        with Image.open(avatar.file) as img:
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-                
-            s = min(img.size) # size 
-            w, h = img.size # width, height 
-            img = img.crop(((w - s) // 2, (h - s) // 2, (w + s) // 2, (h + s) // 2))
-
-            full_img = img.resize((256, 256), Image.Resampling.LANCZOS)
-            full_buffer = io.BytesIO()
-            full_img.save(full_buffer, format="WEBP", quality=75)
-            full_bytes = full_buffer.getvalue()
-            
-            small_img = img.resize((80, 80), Image.Resampling.LANCZOS)
-            small_buffer = io.BytesIO()
-            small_img.save(small_buffer, format="WEBP", quality=75)
-            small_bytes = small_buffer.getvalue()
-    except: 
-        raise HTTPException(422)
-
-    file_hash = hashlib.sha256(full_bytes).hexdigest()
-    
-    full_path = f"public/avatars/{file_hash}.webp"
-    small_path = f"public/avatars/small/{file_hash}.webp"
-    
-    os.makedirs(os.path.dirname(full_path), exist_ok=True)
-    os.makedirs(os.path.dirname(small_path), exist_ok=True)
-
-    async with aiofiles.open(full_path, "wb") as f:
-        await f.write(full_bytes)
-    async with aiofiles.open(small_path, "wb") as f:
-        await f.write(small_bytes)
-
+    file_hash = await save_picture(avatar.file, "public/avatars", (256, 256), square=True)
+    await save_picture(avatar.file, "public/avatars/small", (80, 80), square=True, name=file_hash)
     db.execute(update(User).where(User.id == user_id).values(picture=file_hash)); db.commit()
 
 @v1.post("/server")
@@ -414,6 +422,11 @@ async def update_server_info(server_id: str, req: Annotated[UpdateServerInfoRequ
     values = req.model_dump()
     db.execute(update(Server).where(Server.id == server_id, Server.owner_id ==  user_id).values(values)); db.commit()
     return values
+
+@v1.post("/server/avatar", status_code=202, response_class=Response)
+async def update_server_icon(avatar: UploadFile, server_id: str, db: Database, user_id: AuthUser):
+    file_hash = await save_picture(avatar.file, "public/server/icons", (96, 96), square=True)
+    db.execute(update(Server).where(Server.id == server_id, Server.owner_id == user_id).values(picture=file_hash)); db.commit()
 
 @v1.get("/servers")
 async def get_servers(db: Database, user_id: AuthUser):
@@ -538,19 +551,23 @@ if os.path.exists("./dist"): # serve svelte frontend from dist folder, if it's t
     app.mount("/", StaticFiles(directory="dist", html=True))
 
 # Public file handlers
-@app.get("/avatars/{file_name:path}", response_class=FileResponse)
-async def serve_avatar(user_id: AuthUser, file_name: str, size: Optional[Literal["small"]] = None):
-    if not re.fullmatch(r"[a-f0-9]{64}\.webp", file_name):
-        raise HTTPException(422)
-        
-    base_dir = Path("public/avatars").resolve()
-
+@app.get("/avatars/{name:path}", response_class=FileResponse)
+async def serve_user_avatars(user_id: AuthUser, name: PictureName, size: Optional[Literal["small"]] = None): 
+    base_dir = FilePath("public/avatars").resolve()
     if size == "small":
-        file_path = (base_dir / "small" / file_name).resolve()
+        file_path = (base_dir / "small" / name).resolve()
     else:
-        file_path = (base_dir / file_name).resolve()
+        file_path = (base_dir / name).resolve()
 
     if not file_path.is_file():
         raise HTTPException(404)
+    return FileResponse(file_path, headers=IMMUTABLE_CACHE_HEADER)
 
-    return FileResponse(file_path, headers={"Cache-Control": "private, max-age=31536000, immutable"})
+@app.get("/server/icons/{name:path}", response_class=FileResponse)
+async def serve_server_icons(user_id: AuthUser, name: PictureName):
+    base_dir = FilePath("public/server/icons").resolve()
+    file_path = (base_dir / name).resolve()
+
+    if not file_path.is_file():
+        raise HTTPException(404)
+    return FileResponse(file_path, headers=IMMUTABLE_CACHE_HEADER)
