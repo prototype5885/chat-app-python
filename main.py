@@ -303,7 +303,7 @@ IsInPermittedRole = Annotated[str, Depends(is_in_permitted_role)]
 v1 = APIRouter(prefix="/api/v1")
 
 @v1.post("/user/register", status_code=204, response_class=Response)
-def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database):
+async def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database):
     try:
         user = User(id=str(ULID()), email=req.email, username=req.username, display_name=req.username, 
                     password=password_hasher.hash(req.password))
@@ -312,7 +312,7 @@ def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database):
         raise HTTPException(409)
 
 @v1.post("/user/login", status_code=204, response_class=Response)
-def login_user(req: Annotated[UserLoginRequest, Form()], db: Database, response: Response):
+async def login_user(req: Annotated[UserLoginRequest, Form()], db: Database, response: Response):
     user = db.scalar(select(User).where(User.email == req.email))
     if not user:
         raise HTTPException(401)
@@ -327,29 +327,29 @@ def login_user(req: Annotated[UserLoginRequest, Form()], db: Database, response:
     response.set_cookie(key="token", value=encoded_jwt, httponly=True, secure=True, samesite="lax", max_age=days * 24 * 3600)
 
 @v1.get("/user/logout", status_code=204, response_class=Response)
-def logout_user(response: Response):
+async def logout_user(response: Response):
     response.delete_cookie(key="token")
 
 @v1.delete("/user/delete", status_code=204, response_class=Response)
-def delete_user(db: Database, user_id: AuthUser):
+async def delete_user(db: Database, user_id: AuthUser):
     user = db.execute(select(User).where(User.id == user_id)).scalar_one()
     db.delete(user); db.commit()
 
 @v1.get("/test", response_class=PlainTextResponse)
-def test():
+async def test():
     return "Hello world!"
 
 @v1.get("/user_id", response_class=PlainTextResponse)
-def get_user_id(user_id: AuthUser):
+async def get_user_id(user_id: AuthUser):
     return user_id
 
 @v1.get("/user")
-def get_user_info(db: Database, user_id: AuthUser):
+async def get_user_info(db: Database, user_id: AuthUser):
     display_name, picture = db.execute(select(User.display_name, User.picture).where(User.id == user_id)).one()
     return {"display_name": display_name, "picture": picture}
 
 @v1.patch("/user")
-def update_user_info(req: Annotated[UpdateUserInfoRequest, Form()], db: Database, user_id: AuthUser):
+async def update_user_info(req: Annotated[UpdateUserInfoRequest, Form()], db: Database, user_id: AuthUser):
     values = req.model_dump()
     db.execute(update(User).where(User.id == user_id).values(values)); db.commit()
     return values
@@ -393,7 +393,7 @@ async def update_user_avatar(avatar: UploadFile, db: Database, user_id: AuthUser
     db.execute(update(User).where(User.id == user_id).values(picture=file_hash)); db.commit()
 
 @v1.post("/server")
-def create_server(name: ServerNameStr, db: Database, user_id: AuthUser):
+async def create_server(name: ServerNameStr, db: Database, user_id: AuthUser):
     server = Server(id=str(ULID()), owner_id=user_id, name=name)
     db.add(server)
     db.add(Channel(id=str(ULID()), server_id=server.id, name="Default channel"))
@@ -402,20 +402,20 @@ def create_server(name: ServerNameStr, db: Database, user_id: AuthUser):
     return server
 
 @v1.get("/server")
-def get_server_info(server_id: str, db: Database, user_id: AuthUser):
+async def get_server_info(server_id: str, db: Database, user_id: AuthUser):
     server = db.scalar(select(Server).where(Server.id == server_id, Server.owner_id == user_id))
     if not server:
         raise HTTPException(401)
     return server
 
 @v1.patch("/server")
-def update_server_info(server_id: str, req: Annotated[UpdateServerInfoRequest, Form()], db: Database, user_id: IsServerOwner):
+async def update_server_info(server_id: str, req: Annotated[UpdateServerInfoRequest, Form()], db: Database, user_id: IsServerOwner):
     values = req.model_dump()
     db.execute(update(Server).where(Server.id == server_id, Server.owner_id ==  user_id).values(values)); db.commit()
     return values
 
 @v1.get("/servers")
-def get_servers(db: Database, user_id: AuthUser):
+async def get_servers(db: Database, user_id: AuthUser):
     return db.scalars(select(Server).where(
         or_(Server.owner_id == user_id, Server.members.any(Server_Member.member_id == user_id)))).all()
 
@@ -437,7 +437,7 @@ async def create_channel(server_id: str, name: ChannelNameStr, db: Database, use
     await sio.emit("create_channel", channel.to_dict(), room_path("server", server_id))
 
 @v1.get("/channel")
-def get_channel_info(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner):
+async def get_channel_info(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner):
     channel = db.scalar(select(Channel).where(Channel.id == channel_id, Channel.server_id == server_id))
     if not channel:
         raise HTTPException(401)
@@ -468,7 +468,7 @@ async def delete_channel(server_id: str, channel_id: str, db: Database, user_id:
     await sio.emit("delete_channel", channel_id, room_path("server", server_id))
 
 @v1.get("/member")
-def get_members(server_id: str, db: Database, _: IsServerMember):
+async def get_members(server_id: str, db: Database, _: IsServerMember):
     owner_stmt = (select(User.id, User.display_name, User.picture, User.custom_status).join(Server, Server.owner_id == User.id)
                   .where(Server.id == server_id))
     member_stmt = (select(User.id, User.display_name, User.picture, User.custom_status).join(Server_Member, Server_Member.member_id == User.id)
