@@ -512,15 +512,16 @@ async def typing(db: Database, value: Literal["start", "stop"], channel_id: str,
 
 @v1.post("/upload", response_class=Response)
 async def upload_attachment(attachment: UploadFile, user_id: AuthUser):
-    temp_path = f"public/attachments/temp_{attachment.filename}"
+    temp_path = f"public/attachments/temp_{os.urandom(16).hex()}"
     os.makedirs(os.path.dirname(temp_path), exist_ok=True)
 
+    hash = hashlib.sha256()
     async with aiofiles.open(temp_path, "wb") as tmp:
         while chunk := await attachment.read(4 * 1024 * 1024): # 4 mb chunks
-            hashlib.sha256().update(chunk)
+            hash.update(chunk)
             await tmp.write(chunk)
 
-    hash_name = hashlib.sha256().hexdigest()
+    hash_name = hash.hexdigest()
     _, ext = os.path.splitext(str(attachment.filename))
     final_path = f"public/attachments/{hash_name}{ext}"
 
@@ -528,8 +529,6 @@ async def upload_attachment(attachment: UploadFile, user_id: AuthUser):
         os.remove(temp_path)
     else:
         os.rename(temp_path, final_path)
-
-    return final_path
 
 app.include_router(v1)
 
