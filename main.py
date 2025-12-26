@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, BinaryIO, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 from ulid import ULID
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Response, UploadFile, Path
 from fastapi.security import APIKeyCookie
@@ -171,9 +171,9 @@ def room_path(room_type: RoomType, id: str):
 def get_display_name(db: Database, user_id: str): # TODO not optimal solution, extra query
     return db.execute(select(User.display_name).where(User.id == user_id)).scalar_one()
 
-async def save_picture(file: BinaryIO, path: str, resolution: tuple[int, int], crop_square: bool | None = None, name: str | None = None):
+async def save_picture(file: bytes, path: str, resolution: tuple[int, int], crop_square: bool | None = None, name: str | None = None):
     try:
-        with Image.open(file) as img:
+        with Image.open(io.BytesIO(file)) as img:
             if img.mode != "RGB":
                 img = img.convert("RGB")
             
@@ -395,7 +395,7 @@ async def update_user_info(req: Annotated[UpdateUserInfoRequest, Form()], db: Da
 
 @v1.post("/user/avatar", status_code=202, response_class=Response)
 async def update_user_picture(avatar: UploadFile, db: Database, user_id: AuthUser):
-    file_hash = await save_picture(avatar.file, "public/avatars", (256, 256), crop_square=True)
+    file_hash = await save_picture(avatar.file.read(), "public/avatars", (256, 256), crop_square=True)
     db.execute(update(User).where(User.id == user_id).values(picture=file_hash)); db.commit()
 
 @v1.post("/server")
@@ -422,7 +422,7 @@ async def update_server_info(server_id: str, req: Annotated[UpdateServerInfoRequ
 
 @v1.post("/server/avatar", status_code=202, response_class=Response)
 async def update_server_picture(avatar: UploadFile, server_id: str, db: Database, user_id: AuthUser):
-    file_hash = await save_picture(avatar.file, "public/avatars", (256, 256), crop_square=True)
+    file_hash = await save_picture(avatar.file.read(), "public/avatars", (256, 256), crop_square=True)
     db.execute(update(Server).where(Server.id == server_id, Server.owner_id == user_id).values(picture=file_hash)); db.commit()
 
 @v1.get("/servers")
@@ -563,8 +563,7 @@ async def serve_avatars(user_id: AuthUser, name: PictureName, size: Optional[Lit
                         raise HTTPException(404)
                     os.makedirs(os.path.dirname(resized_file_path), exist_ok=True)
                     async with aiofiles.open(original_file_path, "rb") as img_file:
-                        bytes = await img_file.read()
-                        await save_picture(io.BytesIO(bytes), f"public/avatars/{size}", (int(size), int(size)), name=name)
+                        await save_picture(await img_file.read(), f"public/avatars/{size}", (int(size), int(size)), name=name)
         file_path = resized_file_path
     else: # return full sized picture
         if not original_file_path.is_file():
