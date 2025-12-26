@@ -399,7 +399,7 @@ async def update_user_info(req: Annotated[UpdateUserInfoRequest, Form()], db: Da
 
 @v1.post("/user/avatar", status_code=202, response_class=Response)
 async def update_user_picture(avatar: UploadFile, db: Database, user_id: AuthUser):
-    file_hash = await save_picture(avatar.file.read(), "public/avatars", (256, 256), crop_square=True)
+    file_hash = await save_picture(await avatar.read(), "public/avatars", (256, 256), crop_square=True)
     db.execute(update(User).where(User.id == user_id).values(picture=file_hash)); db.commit()
 
 @v1.post("/server")
@@ -426,7 +426,7 @@ async def update_server_info(server_id: str, req: Annotated[UpdateServerInfoRequ
 
 @v1.post("/server/avatar", status_code=202, response_class=Response)
 async def update_server_picture(avatar: UploadFile, server_id: str, db: Database, user_id: AuthUser):
-    file_hash = await save_picture(avatar.file.read(), "public/avatars", (256, 256), crop_square=True)
+    file_hash = await save_picture(await avatar.read(), "public/avatars", (256, 256), crop_square=True)
     db.execute(update(Server).where(Server.id == server_id, Server.owner_id == user_id).values(picture=file_hash)); db.commit()
 
 @v1.get("/servers")
