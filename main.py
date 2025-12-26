@@ -550,24 +550,25 @@ if os.path.exists("./dist"): # serve svelte frontend from dist folder, if it's t
 # Public file handlers
 serve_avatars_lock = asyncio.Lock()
 @app.get("/avatars/{name:path}", response_class=FileResponse)
-async def serve_avatars(user_id: AuthUser, name: PictureName, size: Optional[Literal["80", "96"]] = None): 
+async def serve_avatars(user_id: AuthUser, name: PictureName, size: Optional[Literal["80", "96"]] = None):
     base_dir = FilePath("public/avatars").resolve()
     original_file_path = (base_dir / name).resolve()
-    
-    if size: # return resized picture if it exists, otherwise create it
-        resized_file_path = (base_dir / size / name).resolve()
-        if not resized_file_path.is_file():
-            async with serve_avatars_lock:
-                if not resized_file_path.is_file():
-                    if not original_file_path.is_file():
-                        raise HTTPException(404)
-                    os.makedirs(os.path.dirname(resized_file_path), exist_ok=True)
-                    async with aiofiles.open(original_file_path, "rb") as img_file:
-                        await save_picture(await img_file.read(), f"public/avatars/{size}", (int(size), int(size)), name=name)
-        file_path = resized_file_path
-    else: # return full sized picture
-        if not original_file_path.is_file():
-            raise HTTPException(404)
-        file_path = original_file_path
+    headers = {"Cache-Control": "private, max-age=2592000, immutable"}
 
-    return FileResponse(file_path, headers={"Cache-Control": "private, max-age=2592000, immutable"})
+    if not size: # if requests original
+        if original_file_path.is_file():
+            return FileResponse(original_file_path, headers=headers)
+        raise HTTPException(404)
+            
+    resized_file_path = (base_dir / size / name).resolve() # if requests resized
+    if resized_file_path.is_file():
+        return FileResponse(resized_file_path, headers=headers)
+        
+    if not original_file_path.is_file(): # create resized if not found
+        raise HTTPException(404)
+    async with serve_avatars_lock:
+        if not resized_file_path.is_file():
+            os.makedirs(os.path.dirname(resized_file_path), exist_ok=True)
+            async with aiofiles.open(original_file_path, "rb") as img_file:
+                await save_picture(await img_file.read(),f"public/avatars/{size}", (int(size), int(size)), name=name)
+    return FileResponse(resized_file_path, headers=headers)
