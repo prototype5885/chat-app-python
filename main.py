@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path as FilePath
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
@@ -341,7 +341,7 @@ IsInPermittedRole = Annotated[str, Depends(is_in_permitted_role)]
 # FastAPI paths
 v1 = APIRouter(prefix="/api/v1")
 
-@v1.post("/user/register", status_code=204, response_class=Response)
+@v1.post("/user/register", response_class=RedirectResponse)
 async def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database):
     try:
         user = User(id=str(ULID()), email=req.email, username=req.username, display_name=req.username, 
@@ -349,9 +349,10 @@ async def register_user(req: Annotated[UserRegisterRequest, Form()], db: Databas
         db.add(user); db.commit()
     except IntegrityError:
         raise HTTPException(409)
+    return RedirectResponse("/login.html", 303)
 
-@v1.post("/user/login", status_code=204, response_class=Response)
-async def login_user(req: Annotated[UserLoginRequest, Form()], db: Database, response: Response):
+@v1.post("/user/login", response_class=RedirectResponse)
+async def login_user(req: Annotated[UserLoginRequest, Form()], db: Database):
     user = db.scalar(select(User).where(User.email == req.email))
     if not user:
         raise HTTPException(401)
@@ -363,7 +364,10 @@ async def login_user(req: Annotated[UserLoginRequest, Form()], db: Database, res
     days: int = 14
     expires = datetime.now(timezone.utc) + timedelta(days=days)
     encoded_jwt = jwt.encode({"user_id": user.id, "exp": expires}, JWT_SECRET, algorithm="HS256")
+    
+    response = RedirectResponse("/", 303)
     response.set_cookie(key="token", value=encoded_jwt, httponly=True, secure=True, samesite="lax", max_age=days * 24 * 3600)
+    return response
 
 @v1.get("/user/logout", status_code=204, response_class=Response)
 async def logout_user(response: Response):
