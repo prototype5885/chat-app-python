@@ -536,7 +536,9 @@ async def update_user_picture(db: Database, user_id: AuthUser,
 @v1.post("/upload/attachment", response_class=Response)
 async def upload_attachment(attachment: UploadFile, user_id: AuthUser):
     MAX_SIZE = 16 * 1024 * 1024 # 16 mb
-    if attachment.size and attachment.size > MAX_SIZE:
+    if attachment.filename is None or attachment.size is None:
+        raise HTTPException(422)
+    if attachment.size > MAX_SIZE:
         raise HTTPException(413)
 
     temp_path = f"public/attachments/temp/{os.urandom(16).hex()}"
@@ -554,10 +556,10 @@ async def upload_attachment(attachment: UploadFile, user_id: AuthUser):
             await tmp.write(chunk)
 
     hash_name = hash.hexdigest()
-    _, ext = os.path.splitext(str(attachment.filename))
-    final_path = f"public/attachments/{hash_name}{ext}"
+    final_path = f"public/attachments/{user_id}/{hash_name}_{attachment.filename}"
 
-    if os.path.exists(final_path):
+    os.makedirs(os.path.dirname(final_path), exist_ok=True)
+    if os.path.isfile(final_path):
         os.remove(temp_path)
     else:
         shutil.move(temp_path, final_path)
