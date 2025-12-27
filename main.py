@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path as FilePath
+import shutil
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
@@ -397,11 +398,6 @@ async def update_user_info(req: Annotated[UpdateUserInfoRequest, Form()], db: Da
     db.execute(update(User).where(User.id == user_id).values(values)); db.commit()
     return values
 
-@v1.post("/user/avatar", status_code=202, response_class=Response)
-async def update_user_picture(avatar: UploadFile, db: Database, user_id: AuthUser):
-    file_hash = await save_picture(await avatar.read(), "public/avatars", (256, 256), crop_square=True)
-    db.execute(update(User).where(User.id == user_id).values(picture=file_hash)); db.commit()
-
 @v1.post("/server")
 async def create_server(name: ServerNameStr, db: Database, user_id: AuthUser):
     server = Server(id=str(ULID()), owner_id=user_id, name=name)
@@ -423,11 +419,6 @@ async def update_server_info(server_id: str, req: Annotated[UpdateServerInfoRequ
     values = req.model_dump()
     db.execute(update(Server).where(Server.id == server_id, Server.owner_id ==  user_id).values(values)); db.commit()
     return values
-
-@v1.post("/server/avatar", status_code=202, response_class=Response)
-async def update_server_picture(avatar: UploadFile, server_id: str, db: Database, user_id: AuthUser):
-    file_hash = await save_picture(await avatar.read(), "public/avatars", (256, 256), crop_square=True)
-    db.execute(update(Server).where(Server.id == server_id, Server.owner_id == user_id).values(picture=file_hash)); db.commit()
 
 @v1.get("/servers")
 async def get_servers(db: Database, user_id: AuthUser):
@@ -525,15 +516,41 @@ async def typing(db: Database, value: Literal["start", "stop"], channel_id: str,
     display_name = get_display_name(db, user_id)
     await sio.emit(f"{value}_typing", display_name, room_path("channel", channel_id))
 
-@v1.post("/upload", response_class=Response)
+@v1.post("/upload/avatar/{target}", status_code=202, response_class=Response)
+async def update_user_picture(db: Database, user_id: AuthUser, 
+    avatar: UploadFile, target: Literal["user", "server"], server_id: str | None = None
+):
+    file_hash = await save_picture(await avatar.read(), "public/avatars", (256, 256), crop_square=True)
+
+    if target == "user":
+        result = db.scalar(update(User).where(User.id == user_id)
+                .values(picture=file_hash).returning(User.id)); db.commit()
+    elif target == "server" and server_id:
+        result = db.scalar(update(Server).where(Server.id == server_id, Server.owner_id == user_id)
+                .values(picture=file_hash).returning(Server.id)); db.commit()
+    else: # if server_id wasn't provided
+        raise HTTPException(400)
+    if not result: # if no row was updated, possibly if server_id doesn't point to a real server
+        raise HTTPException(401)
+
+@v1.post("/upload/attachment", response_class=Response)
 async def upload_attachment(attachment: UploadFile, user_id: AuthUser):
-    temp_path = f"public/attachments/temp_{os.urandom(16).hex()}"
+    MAX_SIZE = 16 * 1024 * 1024 # 16 mb
+    if attachment.size and attachment.size > MAX_SIZE:
+        raise HTTPException(413)
+
+    temp_path = f"public/attachments/temp/{os.urandom(16).hex()}"
     os.makedirs(os.path.dirname(temp_path), exist_ok=True)
 
     hash = hashlib.sha256()
+    real_size: int = 0 # this is calculated in case user sends fake content-length header
     async with aiofiles.open(temp_path, "wb") as tmp:
-        while chunk := await attachment.read(4 * 1024 * 1024): # 4 mb chunks
+        while chunk := await attachment.read(256 * 1024): # 256 kb chunks
+            if real_size > MAX_SIZE:
+                os.remove(temp_path)
+                raise HTTPException(413, "Why spoof file size?")
             hash.update(chunk)
+            real_size += len(chunk)
             await tmp.write(chunk)
 
     hash_name = hash.hexdigest()
@@ -543,7 +560,7 @@ async def upload_attachment(attachment: UploadFile, user_id: AuthUser):
     if os.path.exists(final_path):
         os.remove(temp_path)
     else:
-        os.rename(temp_path, final_path)
+        shutil.move(temp_path, final_path)
 
 app.include_router(v1)
 
