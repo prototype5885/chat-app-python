@@ -192,14 +192,14 @@ async def save_picture(file: bytes, path: str, resolution: tuple[int, int], crop
 
     file_hash: str | None = None
     if name:
-        path = f"{path}/{name}"
+        final_path = FilePath(f"{path}/{name}")
     else:
         file_hash = hashlib.sha256(bytes).hexdigest()
-        path = f"{path}/{file_hash}.webp"
+        final_path = FilePath(f"{path}/{file_hash}.webp")
 
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.makedirs(os.path.dirname(final_path), exist_ok=True)
 
-    async with aiofiles.open(path, "wb") as f:
+    async with aiofiles.open(final_path, "wb") as f:
         await f.write(bytes)
 
     if file_hash: 
@@ -541,7 +541,7 @@ async def upload_attachment(attachment: UploadFile, user_id: AuthUser):
     if attachment.size > MAX_SIZE:
         raise HTTPException(413)
 
-    temp_path = f"public/attachments/temp/{os.urandom(16).hex()}"
+    temp_path = FilePath(f"public/attachments/temp/{os.urandom(16).hex()}")
     os.makedirs(os.path.dirname(temp_path), exist_ok=True)
 
     hash = hashlib.sha256()
@@ -556,10 +556,10 @@ async def upload_attachment(attachment: UploadFile, user_id: AuthUser):
             await tmp.write(chunk)
 
     hash_name = hash.hexdigest()
-    final_path = f"public/attachments/{user_id}/{hash_name}_{attachment.filename}"
+    final_path = FilePath(f"public/attachments/{user_id}/{hash_name}_{attachment.filename}")
 
     os.makedirs(os.path.dirname(final_path), exist_ok=True)
-    if os.path.isfile(final_path):
+    if final_path.is_file():
         os.remove(temp_path)
     else:
         shutil.move(temp_path, final_path)
