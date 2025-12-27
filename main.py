@@ -107,7 +107,7 @@ class Message(Base):
     channel_id: Mapped[str] = mapped_column(CHAR(ULID_LEN), ForeignKey("channels.id", ondelete="CASCADE"))
     message: Mapped[str] = mapped_column(String(MESSAGE_LEN.max))
     attachments: Mapped[Optional[str]] = mapped_column(default=None)
-    edited: Mapped[Optional[bool]] = mapped_column(default=None)
+    edited: Mapped[Optional[str]] = mapped_column(default=None)
     
     channel: Mapped["Channel"] = relationship(back_populates="messages")
     user: Mapped["User"] = relationship(back_populates="messages")
@@ -116,7 +116,7 @@ class Server_Member(Base):
     __tablename__ = "server_members"
     server_id: Mapped[str] = mapped_column(CHAR(ULID_LEN), ForeignKey("servers.id", ondelete="CASCADE"), primary_key=True, index=True)
     member_id: Mapped[str] = mapped_column(CHAR(ULID_LEN), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, index=True)
-    member_since: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    member_since: Mapped[str] = mapped_column(server_default=func.now())
 
     server: Mapped["Server"] = relationship(back_populates="members")
 
@@ -151,6 +151,10 @@ class UserLoginRequest(BaseModel):
     password: PasswordStr
 
 class MessageCreateRequest(BaseModel):
+    message: MessageStr
+
+class MessageEditRequest(BaseModel):
+    message_id: str
     message: MessageStr
 
 class UpdateUserInfoRequest(BaseModel):
@@ -494,12 +498,16 @@ async def create_message(req: MessageCreateRequest, channel_id: str, db: Databas
     data = {**message.to_dict(), "display_name": display_name, "picture": picture}
     await sio.emit("create_message", data, room_path("channel", channel_id))
 
-@v1.get("/message")
-async def get_messages(channel_id: str, db: Database, user_id: IsServerMember):
-    results = db.execute(select(Message, User.display_name, User.picture).join(User)
-                      .where(Message.channel_id == channel_id).order_by(desc(Message.id)).limit(50)).all()
-    return [{**message.to_dict(), "display_name": display_name, "picture": picture} 
-            for message, display_name, picture in results]
+@v1.patch("/message", status_code=202, response_class=Response)
+async def edit_message(req: MessageEditRequest, db: Database, user_id: IsServerMember):
+    msg = db.scalar(update(Message).where(Message.id == req.message_id, Message.sender_id == user_id)
+        .values({"message": req.message, "edited": func.now()}).returning(Message)); 
+    if msg is None:
+        raise HTTPException(401)
+    db.commit()
+
+    data = {"id": msg.id, "message": msg.message, "edited": msg.edited}
+    await sio.emit("edit_message", data, room_path("channel", msg.channel_id))
 
 @v1.delete("/message", status_code=202, response_class=Response)
 async def delete_message(message_id: str, db: Database, user_id: AuthUser):
@@ -510,6 +518,13 @@ async def delete_message(message_id: str, db: Database, user_id: AuthUser):
     db.delete(message); db.commit()
 
     await sio.emit("delete_message", message.id, room_path("channel", message.channel_id))
+
+@v1.get("/message")
+async def get_messages(channel_id: str, db: Database, user_id: IsServerMember):
+    results = db.execute(select(Message, User.display_name, User.picture).join(User)
+                      .where(Message.channel_id == channel_id).order_by(desc(Message.id)).limit(50)).all()
+    return [{**message.to_dict(), "display_name": display_name, "picture": picture} 
+            for message, display_name, picture in results]
 
 @v1.post("/typing", status_code=202, response_class=Response)
 async def typing(db: Database, value: Literal["start", "stop"], channel_id: str, user_id: IsServerMember):
