@@ -3,15 +3,15 @@ name = "chat-app-python"
 version = "0.1.0"
 description = ""
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = "~=3.14.0"
 dependencies = [
-    "aiofiles>=25.1.0",
-    "argon2-cffi>=25.1.0",
-    "fastapi[standard-no-fastapi-cloud-cli]>=0.127.0",
-    "pillow>=12.0.0",
-    "pyjwt>=2.10.1",
-    "python-dotenv>=1.2.1",
-    "python-socketio>=5.15.1",
-    "python-ulid>=3.1.0",
-    "sqlalchemy>=2.0.45",
+    "aiofiles==25.1.0",
+    "argon2-cffi==25.1.0",
+    "fastapi[standard-no-fastapi-cloud-cli]==0.128.0",
+    "pillow==12.0.0",
+    "pyjwt==2.10.1",
+    "python-dotenv==1.2.1",
+    "python-socketio==5.16.0",
+    "python-ulid==3.1.0",
+    "sqlalchemy==2.0.45",
 ]
