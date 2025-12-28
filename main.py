@@ -345,6 +345,14 @@ def is_in_permitted_role(db: Database, channel_id: str, user_id: AuthUser):
     return user_id
 IsInPermittedRole = Annotated[str, Depends(is_in_permitted_role)]
 
+def has_auth_for_channel(db: Database, channel_id: str, user_id: AuthUser):
+    server_id = db.scalar(select(Channel.server_id).where(Channel.id == channel_id))
+    if server_id is None:
+        raise HTTPException(404, f"Channel ID '{channel_id}' doesn't belong to any server")
+    is_server_member(db, server_id, user_id)
+    return user_id
+AuthUserChannel = Annotated[str, Depends(has_auth_for_channel)]
+
 
 # FastAPI paths
 v1 = APIRouter(prefix="/api/v1")
@@ -491,8 +499,8 @@ async def get_members(server_id: str, db: Database, _: IsServerMember):
     return [{"user_id": user_id, "display_name": display_name, "picture": picture, "custom_status": custom_status} 
         for user_id, display_name, picture, custom_status in rows]
 
-@v1.post("/server/{server_id}/channel/{channel_id}/message", status_code=202, response_class=Response)
-async def create_message(channel_id: str, req: MessageCreateRequest, db: Database, user_id: IsServerMember):
+@v1.post("/channel/{channel_id}/message", status_code=202, response_class=Response)
+async def create_message(channel_id: str, req: MessageCreateRequest, db: Database, user_id: AuthUserChannel):
     message = Message(id=str(ULID()), sender_id=user_id, channel_id=channel_id, message=req.message)
     db.add(message); db.commit()
 
@@ -522,15 +530,15 @@ async def delete_message(message_id: str, db: Database, user_id: AuthUser):
 
     await sio.emit("delete_message", message.id, room_path("channel", message.channel_id))
 
-@v1.get("/server/{server_id}/channel/{channel_id}/messages")
-async def get_messages(channel_id: str, db: Database, user_id: IsServerMember):
+@v1.get("/channel/{channel_id}/messages")
+async def get_messages(channel_id: str, db: Database, user_id: AuthUserChannel):
     results = db.execute(select(Message, User.display_name, User.picture).join(User)
                       .where(Message.channel_id == channel_id).order_by(desc(Message.id)).limit(50)).all()
     return [{**message.to_dict(), "display_name": display_name, "picture": picture} 
             for message, display_name, picture in results]
 
-@v1.post("/server/{server_id}/channel/{channel_id}/typing/{value}", status_code=202, response_class=Response)
-async def typing(db: Database, value: Literal["start", "stop"], channel_id: str, user_id: IsServerMember):
+@v1.post("/channel/{channel_id}/typing/{value}", status_code=202, response_class=Response)
+async def typing(db: Database, value: Literal["start", "stop"], channel_id: str, user_id: AuthUserChannel):
     display_name = get_display_name(db, user_id)
     await sio.emit(f"{value}_typing", display_name, room_path("channel", channel_id))
 
