@@ -150,23 +150,26 @@ class UserLoginRequest(BaseModel):
     email: EmailStr
     password: PasswordStr
 
+class UserEditRequest(BaseModel):
+    display_name: Optional[DisplayNameStr] = None
+
+class ServerCreateRequest(BaseModel):
+    name: ServerNameStr
+
+class ServerEditRequest(BaseModel):
+    name: Optional[ServerNameStr] = None
+
+class ChannelCreateRequest(BaseModel):
+    name: ChannelNameStr
+
+class ChannelEditRequest(BaseModel):
+    name: Optional[ChannelNameStr] = None
+
 class MessageCreateRequest(BaseModel):
     message: MessageStr
 
 class MessageEditRequest(BaseModel):
-    message_id: str
     message: MessageStr
-
-class UpdateUserInfoRequest(BaseModel):
-    display_name: Optional[DisplayNameStr] = None
-    picture: Optional[str] = None
-
-class UpdateServerInfoRequest(BaseModel):
-    name: Optional[ServerNameStr] = None
-    picture: Optional[str] = None
-
-class UpdateChannelInfoRequest(BaseModel):
-    name: Optional[ChannelNameStr] = None
 
 
 # Helpers
@@ -397,29 +400,29 @@ async def get_user_info(db: Database, user_id: AuthUser):
     return {"display_name": display_name, "picture": picture}
 
 @v1.patch("/user")
-async def update_user_info(req: Annotated[UpdateUserInfoRequest, Form()], db: Database, user_id: AuthUser):
+async def update_user_info(req: Annotated[UserEditRequest, Form()], db: Database, user_id: AuthUser):
     values = req.model_dump()
     db.execute(update(User).where(User.id == user_id).values(values)); db.commit()
     return values
 
 @v1.post("/server")
-async def create_server(name: ServerNameStr, db: Database, user_id: AuthUser):
-    server = Server(id=str(ULID()), owner_id=user_id, name=name)
+async def create_server(req: ServerCreateRequest, db: Database, user_id: AuthUser):
+    server = Server(id=str(ULID()), owner_id=user_id, name=req.name)
     db.add(server)
     db.add(Channel(id=str(ULID()), server_id=server.id, name="Default channel"))
     db.commit()
     db.refresh(server)
     return server
 
-@v1.get("/server")
+@v1.get("/server/{server_id}")
 async def get_server_info(server_id: str, db: Database, user_id: AuthUser):
     server = db.scalar(select(Server).where(Server.id == server_id, Server.owner_id == user_id))
     if not server:
         raise HTTPException(401)
     return server
 
-@v1.patch("/server")
-async def update_server_info(server_id: str, req: Annotated[UpdateServerInfoRequest, Form()], db: Database, user_id: IsServerOwner):
+@v1.patch("/server/{server_id}")
+async def update_server_info(server_id: str, req: Annotated[ServerEditRequest, Form()], db: Database, user_id: IsServerOwner):
     values = req.model_dump()
     db.execute(update(Server).where(Server.id == server_id, Server.owner_id ==  user_id).values(values)); db.commit()
     return values
@@ -429,7 +432,7 @@ async def get_servers(db: Database, user_id: AuthUser):
     return db.scalars(select(Server).where(
         or_(Server.owner_id == user_id, Server.members.any(Server_Member.member_id == user_id)))).all()
 
-@v1.delete("/server", status_code=202, response_class=Response)
+@v1.delete("/server/{server_id}", status_code=202, response_class=Response)
 async def delete_server(server_id: str, db: Database, user_id: AuthUser):
     server = db.scalar(select(Server).where(Server.id == server_id, Server.owner_id == user_id))
     if not server:
@@ -439,22 +442,22 @@ async def delete_server(server_id: str, db: Database, user_id: AuthUser):
     
     await sio.emit("delete_server", server_id, room_path("server", server_id))
 
-@v1.post("/channel", status_code=202, response_class=Response)
-async def create_channel(server_id: str, name: ChannelNameStr, db: Database, user_id: IsServerOwner):
-    channel = Channel(id=str(ULID()), server_id=server_id, name=name)
+@v1.post("/server/{server_id}/channel", status_code=202, response_class=Response)
+async def create_channel(server_id: str, req: ChannelCreateRequest, db: Database, user_id: IsServerOwner):
+    channel = Channel(id=str(ULID()), server_id=server_id, name=req.name)
     db.add(channel); db.commit()
 
     await sio.emit("create_channel", channel.to_dict(), room_path("server", server_id))
 
-@v1.get("/channel")
+@v1.get("/server/{server_id}/channel/{channel_id}")
 async def get_channel_info(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner):
     channel = db.scalar(select(Channel).where(Channel.id == channel_id, Channel.server_id == server_id))
     if not channel:
         raise HTTPException(401)
     return channel
 
-@v1.patch("/channel")
-async def update_channel_info(server_id: str, channel_id: str, req: Annotated[UpdateChannelInfoRequest, Form()], db: Database, user_id: IsServerOwner):
+@v1.patch("/server/{server_id}/channel/{channel_id}")
+async def update_channel_info(server_id: str, channel_id: str, req: Annotated[ChannelEditRequest, Form()], db: Database, user_id: IsServerOwner):
     values = req.model_dump()
     channel = db.scalar(update(Channel).where(Channel.id == channel_id, Channel.server_id == server_id).values(values).returning(Channel)); 
     if channel is None:
@@ -467,7 +470,7 @@ async def update_channel_info(server_id: str, channel_id: str, req: Annotated[Up
 async def get_channels(server_id: str, db: Database, user_id: IsServerMember):
     return db.scalars(select(Channel).where(Channel.server_id == server_id)).all()
 
-@v1.delete("/channel", status_code=202, response_class=Response)
+@v1.delete("/server/{server_id}/channel/{channel_id}", status_code=202, response_class=Response)
 async def delete_channel(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner):
     channel = db.scalar(select(Channel).where(Channel.id == channel_id, Channel.server_id == server_id))
     if not channel:
@@ -477,7 +480,7 @@ async def delete_channel(server_id: str, channel_id: str, db: Database, user_id:
 
     await sio.emit("delete_channel", channel_id, room_path("server", server_id))
 
-@v1.get("/member")
+@v1.get("/server/{server_id}/members")
 async def get_members(server_id: str, db: Database, _: IsServerMember):
     owner_stmt = (select(User.id, User.display_name, User.picture, User.custom_status).join(Server, Server.owner_id == User.id)
                   .where(Server.id == server_id))
@@ -488,8 +491,8 @@ async def get_members(server_id: str, db: Database, _: IsServerMember):
     return [{"user_id": user_id, "display_name": display_name, "picture": picture, "custom_status": custom_status} 
         for user_id, display_name, picture, custom_status in rows]
 
-@v1.post("/message", status_code=202, response_class=Response)
-async def create_message(req: MessageCreateRequest, channel_id: str, db: Database, user_id: IsServerMember):
+@v1.post("/server/{server_id}/channel/{channel_id}/message", status_code=202, response_class=Response)
+async def create_message(channel_id: str, req: MessageCreateRequest, db: Database, user_id: IsServerMember):
     message = Message(id=str(ULID()), sender_id=user_id, channel_id=channel_id, message=req.message)
     db.add(message); db.commit()
 
@@ -498,9 +501,9 @@ async def create_message(req: MessageCreateRequest, channel_id: str, db: Databas
     data = {**message.to_dict(), "display_name": display_name, "picture": picture}
     await sio.emit("create_message", data, room_path("channel", channel_id))
 
-@v1.patch("/message", status_code=202, response_class=Response)
-async def edit_message(req: MessageEditRequest, db: Database, user_id: IsServerMember):
-    msg = db.scalar(update(Message).where(Message.id == req.message_id, Message.sender_id == user_id)
+@v1.patch("/message/{message_id}", status_code=202, response_class=Response)
+async def edit_message(message_id: str, req: MessageEditRequest, db: Database, user_id: AuthUser):
+    msg = db.scalar(update(Message).where(Message.id == message_id, Message.sender_id == user_id)
         .values({"message": req.message, "edited": func.now()}).returning(Message)); 
     if msg is None:
         raise HTTPException(401)
@@ -509,7 +512,7 @@ async def edit_message(req: MessageEditRequest, db: Database, user_id: IsServerM
     data = {"id": msg.id, "message": msg.message, "edited": msg.edited}
     await sio.emit("edit_message", data, room_path("channel", msg.channel_id))
 
-@v1.delete("/message", status_code=202, response_class=Response)
+@v1.delete("/message/{message_id}", status_code=202, response_class=Response)
 async def delete_message(message_id: str, db: Database, user_id: AuthUser):
     message = db.scalar(select(Message).where(Message.id == message_id, Message.sender_id == user_id))
     if not message:
@@ -519,14 +522,14 @@ async def delete_message(message_id: str, db: Database, user_id: AuthUser):
 
     await sio.emit("delete_message", message.id, room_path("channel", message.channel_id))
 
-@v1.get("/message")
+@v1.get("/server/{server_id}/channel/{channel_id}/messages")
 async def get_messages(channel_id: str, db: Database, user_id: IsServerMember):
     results = db.execute(select(Message, User.display_name, User.picture).join(User)
                       .where(Message.channel_id == channel_id).order_by(desc(Message.id)).limit(50)).all()
     return [{**message.to_dict(), "display_name": display_name, "picture": picture} 
             for message, display_name, picture in results]
 
-@v1.post("/typing", status_code=202, response_class=Response)
+@v1.post("/server/{server_id}/channel/{channel_id}/typing/{value}", status_code=202, response_class=Response)
 async def typing(db: Database, value: Literal["start", "stop"], channel_id: str, user_id: IsServerMember):
     display_name = get_display_name(db, user_id)
     await sio.emit(f"{value}_typing", display_name, room_path("channel", channel_id))
