@@ -195,7 +195,7 @@ async def save_picture(file: bytes, path: str, resolution: tuple[int, int], crop
             img.save(buffer, format="WEBP", quality=75)
             bytes = buffer.getvalue()
     except: 
-        raise HTTPException(422)
+        raise HTTPException(422, "Error processing received picture")
 
     file_hash: str | None = None
     if name:
@@ -364,18 +364,18 @@ async def register_user(req: Annotated[UserRegisterRequest, Form()], db: Databas
                     password=password_hasher.hash(req.password))
         db.add(user); db.commit()
     except IntegrityError:
-        raise HTTPException(409)
+        raise HTTPException(409, "User with same e-mail or username already exists")
     return RedirectResponse("/login.html", 303)
 
 @v1.post("/user/login", response_class=RedirectResponse)
 async def login_user(req: Annotated[UserLoginRequest, Form()], db: Database):
     user = db.scalar(select(User).where(User.email == req.email))
     if not user:
-        raise HTTPException(401)
+        raise HTTPException(401, "Bad login")
     try:
         password_hasher.verify(user.password, req.password)
     except exceptions.VerifyMismatchError:
-        raise HTTPException(401)
+        raise HTTPException(401, "Bad login")
 
     days: int = 14
     expires = datetime.now(timezone.utc) + timedelta(days=days)
@@ -426,7 +426,7 @@ async def create_server(req: ServerCreateRequest, db: Database, user_id: AuthUse
 async def get_server_info(server_id: str, db: Database, user_id: AuthUser):
     server = db.scalar(select(Server).where(Server.id == server_id, Server.owner_id == user_id))
     if not server:
-        raise HTTPException(401)
+        raise HTTPException(401, f"You don't own any server with ID '{server_id}'")
     return server
 
 @v1.patch("/server/{server_id}")
@@ -444,7 +444,7 @@ async def get_servers(db: Database, user_id: AuthUser):
 async def delete_server(server_id: str, db: Database, user_id: AuthUser):
     server = db.scalar(select(Server).where(Server.id == server_id, Server.owner_id == user_id))
     if not server:
-        raise HTTPException(401)
+        raise HTTPException(401, f"You don't own any server with ID '{server_id}'")
     
     db.delete(server); db.commit()
     
@@ -461,7 +461,7 @@ async def create_channel(server_id: str, req: ChannelCreateRequest, db: Database
 async def get_channel_info(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner):
     channel = db.scalar(select(Channel).where(Channel.id == channel_id, Channel.server_id == server_id))
     if not channel:
-        raise HTTPException(401)
+        raise HTTPException(401, f"Not authorised to get info of channel ID '{channel_id}'")
     return channel
 
 @v1.patch("/server/{server_id}/channel/{channel_id}")
@@ -482,7 +482,7 @@ async def get_channels(server_id: str, db: Database, user_id: IsServerMember):
 async def delete_channel(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner):
     channel = db.scalar(select(Channel).where(Channel.id == channel_id, Channel.server_id == server_id))
     if not channel:
-        raise HTTPException(401)
+        raise HTTPException(401, f"Not authorised to delete channel ID '{channel_id}'")
     
     db.delete(channel); db.commit()
 
@@ -514,7 +514,7 @@ async def edit_message(message_id: str, req: MessageEditRequest, db: Database, u
     msg = db.scalar(update(Message).where(Message.id == message_id, Message.sender_id == user_id)
         .values({"message": req.message, "edited": func.now()}).returning(Message)); 
     if msg is None:
-        raise HTTPException(401)
+        raise HTTPException(401, f"Not authorised to edit message ID '{message_id}'")
     db.commit()
 
     data = {"id": msg.id, "message": msg.message, "edited": msg.edited}
@@ -524,7 +524,7 @@ async def edit_message(message_id: str, req: MessageEditRequest, db: Database, u
 async def delete_message(message_id: str, db: Database, user_id: AuthUser):
     message = db.scalar(select(Message).where(Message.id == message_id, Message.sender_id == user_id))
     if not message:
-        raise HTTPException(401)
+        raise HTTPException(401, f"Not authorised to delete message ID '{message_id}'")
     
     db.delete(message); db.commit()
 
@@ -557,15 +557,15 @@ async def update_user_picture(db: Database, user_id: AuthUser,
     else: # if server_id wasn't provided
         raise HTTPException(400)
     if not result: # if no row was updated, possibly if server_id doesn't point to a real server
-        raise HTTPException(401)
+        raise HTTPException(401, f"Not authorised to update avatar of server ID '{server_id}'")
 
 @v1.post("/upload/attachment", response_class=Response)
 async def upload_attachment(attachment: UploadFile, user_id: AuthUser):
     MAX_SIZE = 16 * 1024 * 1024 # 16 mb
     if attachment.filename is None or attachment.size is None:
-        raise HTTPException(422)
+        raise HTTPException(422, "No filename or content length provided")
     if attachment.size > MAX_SIZE:
-        raise HTTPException(413)
+        raise HTTPException(413, f"Exceeding max upload limit of {MAX_SIZE/1024/1024} mb")
 
     temp_path = FilePath(f"public/attachments/temp/{os.urandom(16).hex()}")
     os.makedirs(os.path.dirname(temp_path), exist_ok=True)
