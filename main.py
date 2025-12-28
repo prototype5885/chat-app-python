@@ -474,7 +474,7 @@ async def update_channel_info(server_id: str, channel_id: str, req: Annotated[Ch
     await sio.emit("modify_channel", channel.to_dict(), room_path("server", server_id))
     return values
 
-@v1.get("/channels")
+@v1.get("/server/{server_id}/channels")
 async def get_channels(server_id: str, db: Database, user_id: IsServerMember):
     return db.scalars(select(Channel).where(Channel.server_id == server_id)).all()
 
