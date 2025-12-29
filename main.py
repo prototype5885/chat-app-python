@@ -274,12 +274,12 @@ async def subscribe(sid: str, room_type: RoomType, target: str):
     for room in sio.rooms(sid): 
         if room.startswith(room_type): 
             await sio.leave_room(sid, room)
-            print(f"sid '{sid}' unsubscribed from: '{room}'")
+            # print(f"sid '{sid}' unsubscribed from: '{room}'")
             break
 
     room = room_path(room_type, target)
     await sio.enter_room(sid, room)
-    print(f"sid '{sid}' subscribed to '{room}'")
+    # print(f"sid '{sid}' subscribed to '{room}'")
 
 # Socket.IO events
 @sio.event
@@ -291,11 +291,11 @@ async def connect(sid: str, env):
             raise ConnectionRefusedError('authentication failed')
         
     await sio.save_session(sid, {"user_id": user_id})
-    print(f"User ID '{user_id}' connected to Socket.IO as sid '{sid}'")
+    # print(f"User ID '{user_id}' connected to Socket.IO as sid '{sid}'")
 
-@sio.event
-async def disconnect(sid: str, reason):
-    print(f"Sid '{sid}' disconnected from Socket.IO, reason: '{reason}'")
+# @sio.event
+# async def disconnect(sid: str, reason):
+    # print(f"Sid '{sid}' disconnected from Socket.IO, reason: '{reason}'")
 
 @sio.event
 async def subscribe_to_channel_list(sid: str, server_id: str):
