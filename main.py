@@ -252,22 +252,22 @@ sio = AsyncServer(cors_allowed_origins='*', async_mode='asgi')
 app.mount("/socket.io", ASGIApp(socketio_server=sio, other_asgi_app=app))
 
 # Socket.IO helpers
-async def sio_is_server_member(sid: str, server_id: str) -> str | None:
+async def sio_has_server_access(sid: str, server_id: str) -> str | None:
     sio_session = await sio.get_session(sid)
     user_id = sio_session.get("user_id")
     assert type(user_id) == str
     
     with Session(engine) as session:
-        try: is_server_member(session, server_id, user_id)
+        try: has_server_access(session, server_id, user_id)
         except Exception as e: return str(e)
 
-async def sio_is_channel_member(sid: str, channel_id: str) -> str | None:
+async def sio_has_channel_access(sid: str, channel_id: str) -> str | None:
     sio_session = await sio.get_session(sid)
     user_id = sio_session.get("user_id")
     assert type(user_id) == str
 
     with Session(engine) as session:
-        try: has_auth_for_channel(session, channel_id, user_id)
+        try: has_channel_access(session, channel_id, user_id)
         except Exception as e: return str(e)
     
 async def subscribe(sid: str, room_type: RoomType, target: str):
@@ -299,12 +299,12 @@ async def disconnect(sid: str, reason):
 
 @sio.event
 async def subscribe_to_channel_list(sid: str, server_id: str):
-    if issue := await sio_is_server_member(sid, server_id): return issue
+    if issue := await sio_has_server_access(sid, server_id): return issue
     await subscribe(sid, "server", server_id)
 
 @sio.event
 async def subscribe_to_message_list(sid: str, channel_id: str):
-    if issue := await sio_is_channel_member(sid, channel_id): return issue
+    if issue := await sio_has_channel_access(sid, channel_id): return issue
     await subscribe(sid, "channel", channel_id)
 
 
@@ -337,30 +337,33 @@ def is_server_owner(db: Database, server_id: str, user_id: AuthUser):
     is_owner = db.scalar(select(exists().where(Server.id == server_id, Server.owner_id == user_id)))
     if not is_owner:
         raise HTTPException(401, "Not owner of server, which may not even exist")
-
     return user_id
 IsServerOwner = Annotated[str, Depends(is_server_owner)]
 
-def is_server_member(db: Database, server_id: str, user_id: AuthUser):
+def has_server_access(db: Database, server_id: str, user_id: AuthUser):
     is_owner = exists().where(Server.id == server_id, Server.owner_id == user_id)
     is_member = exists().where(Server_Member.server_id == server_id, Server_Member.member_id == user_id)
     result = db.scalar(select(is_owner | is_member))
     if not result:
         raise HTTPException(401, "Not member or owner of server, which may not even exist")
     return user_id
-IsServerMember = Annotated[str, Depends(is_server_member)]
+HasServerAccess = Annotated[str, Depends(has_server_access)]
 
-def is_in_permitted_role(db: Database, channel_id: str, user_id: AuthUser):
-    return user_id
-IsInPermittedRole = Annotated[str, Depends(is_in_permitted_role)]
-
-def has_auth_for_channel(db: Database, channel_id: str, user_id: AuthUser):
+def is_channel_owner(db: Database, channel_id: str, user_id: AuthUser):
     server_id = db.scalar(select(Channel.server_id).where(Channel.id == channel_id))
     if not server_id:
         raise HTTPException(404, f"Channel ID '{channel_id}' doesn't belong to any server")
-    is_server_member(db, server_id, user_id)
+    is_server_owner(db, server_id, user_id)
     return user_id
-AuthUserChannel = Annotated[str, Depends(has_auth_for_channel)]
+IsChannelOwner = Annotated[str, Depends(is_channel_owner)]
+
+def has_channel_access(db: Database, channel_id: str, user_id: AuthUser):
+    server_id = db.scalar(select(Channel.server_id).where(Channel.id == channel_id))
+    if not server_id:
+        raise HTTPException(404, f"Channel ID '{channel_id}' doesn't belong to any server")
+    has_server_access(db, server_id, user_id)
+    return user_id
+HasChannelAccess = Annotated[str, Depends(has_channel_access)]
 
 
 # FastAPI paths
@@ -499,7 +502,7 @@ async def update_channel_info(server_id: str, channel_id: str, req: Annotated[Ch
     return values
 
 @v1.get("/server/{server_id}/channels")
-async def get_channels(server_id: str, db: Database, user_id: IsServerMember):
+async def get_channels(server_id: str, db: Database, user_id: HasServerAccess):
     return db.scalars(select(Channel).where(Channel.server_id == server_id)).all()
 
 @v1.delete("/server/{server_id}/channel/{channel_id}", status_code=202, response_class=Response)
@@ -513,7 +516,7 @@ async def delete_channel(server_id: str, channel_id: str, db: Database, user_id:
     await sio.emit("delete_channel", channel_id, room_path("server", server_id))
 
 @v1.get("/server/{server_id}/members")
-async def get_members(server_id: str, db: Database, _: IsServerMember):
+async def get_members(server_id: str, db: Database, _: HasServerAccess):
     owner_stmt = (select(User.id, User.display_name, User.picture, User.custom_status).join(Server, Server.owner_id == User.id)
                   .where(Server.id == server_id))
     member_stmt = (select(User.id, User.display_name, User.picture, User.custom_status).join(Server_Member, Server_Member.member_id == User.id)
@@ -524,7 +527,7 @@ async def get_members(server_id: str, db: Database, _: IsServerMember):
         for user_id, display_name, picture, custom_status in rows]
 
 @v1.post("/channel/{channel_id}/message", status_code=202, response_class=Response)
-async def create_message(channel_id: str, req: MessageCreateRequest, db: Database, user_id: AuthUserChannel):
+async def create_message(channel_id: str, req: MessageCreateRequest, db: Database, user_id: HasChannelAccess):
     message = Message(id=str(ULID()), sender_id=user_id, channel_id=channel_id, message=req.message)
     db.add(message); db.commit()
 
@@ -555,14 +558,14 @@ async def delete_message(message_id: str, db: Database, user_id: AuthUser):
     await sio.emit("delete_message", message.id, room_path("channel", message.channel_id))
 
 @v1.get("/channel/{channel_id}/messages")
-async def get_messages(channel_id: str, db: Database, user_id: AuthUserChannel):
+async def get_messages(channel_id: str, db: Database, user_id: HasChannelAccess):
     results = db.execute(select(Message, User.display_name, User.picture).join(User)
                       .where(Message.channel_id == channel_id).order_by(desc(Message.id)).limit(50)).all()
     return [{**message.to_dict(), "display_name": display_name, "picture": picture} 
             for message, display_name, picture in results]
 
 @v1.post("/channel/{channel_id}/typing/{value}", status_code=202, response_class=Response)
-async def typing(db: Database, value: Literal["start", "stop"], channel_id: str, user_id: AuthUserChannel):
+async def typing(db: Database, value: Literal["start", "stop"], channel_id: str, user_id: HasChannelAccess):
     display_name = get_display_name(db, user_id)
     await sio.emit(f"{value}_typing", display_name, room_path("channel", channel_id))
 
