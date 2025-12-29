@@ -153,6 +153,12 @@ class UserLoginRequest(BaseModel):
 class UserEditRequest(BaseModel):
     display_name: Optional[DisplayNameStr] = None
 
+class UserResponse(BaseModel):
+    user_id: str
+    display_name: str
+    picture: Optional[str] = None
+    custom_status: Optional[str] = None
+
 class ServerCreateRequest(BaseModel):
     name: ServerNameStr
 
@@ -171,6 +177,16 @@ class MessageCreateRequest(BaseModel):
 class MessageEditRequest(BaseModel):
     message: MessageStr
 
+class MessageResponse(BaseModel):
+    id: str
+    sender_id: str
+    channel_id: str
+    message: MessageStr
+    attachments: Optional[str] = None
+    edited: Optional[str] = None
+    display_name: DisplayNameStr
+    picture: Optional[str] = None
+    
 
 # Helpers
 def room_path(room_type: RoomType, id: str):
@@ -519,14 +535,14 @@ async def delete_channel(channel_id: str, db: Database, auth: IsChannelOwner):
     await sio.emit("delete_channel", channel_id, room_path("server", server_id))
 
 @v1.get("/server/{server_id}/members")
-async def get_members(server_id: str, db: Database, _: HasServerAccess):
+async def get_members(server_id: str, db: Database, _: HasServerAccess) -> list[UserResponse]:
     owner_stmt = (select(User.id, User.display_name, User.picture, User.custom_status).join(Server, Server.owner_id == User.id)
                   .where(Server.id == server_id))
     member_stmt = (select(User.id, User.display_name, User.picture, User.custom_status).join(Server_Member, Server_Member.member_id == User.id)
                    .where(Server_Member.server_id == server_id))
     rows = db.execute(union(owner_stmt, member_stmt)).all()
 
-    return [{"user_id": user_id, "display_name": display_name, "picture": picture, "custom_status": custom_status} 
+    return [UserResponse(user_id=user_id, display_name=display_name, picture=picture, custom_status=custom_status) 
         for user_id, display_name, picture, custom_status in rows]
 
 @v1.post("/channel/{channel_id}/message", status_code=202, response_class=Response)
@@ -561,11 +577,11 @@ async def delete_message(message_id: str, db: Database, user_id: AuthUser):
     await sio.emit("delete_message", message.id, room_path("channel", message.channel_id))
 
 @v1.get("/channel/{channel_id}/messages")
-async def get_messages(channel_id: str, db: Database, user_id: HasChannelAccess):
+async def get_messages(channel_id: str, db: Database, user_id: HasChannelAccess) -> list[MessageResponse]:
     results = db.execute(select(Message, User.display_name, User.picture).join(User)
                       .where(Message.channel_id == channel_id).order_by(desc(Message.id)).limit(50)).all()
-    return [{**message.to_dict(), "display_name": display_name, "picture": picture} 
-            for message, display_name, picture in results]
+    return [MessageResponse(**message.to_dict(), display_name=display_name, picture=picture) 
+        for message, display_name, picture in results]
 
 @v1.post("/channel/{channel_id}/typing/{value}", status_code=202, response_class=Response)
 async def typing(db: Database, value: Literal["start", "stop"], channel_id: str, user_id: HasChannelAccess):
