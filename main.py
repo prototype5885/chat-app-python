@@ -354,7 +354,7 @@ def is_channel_owner(db: Database, channel_id: str, user_id: AuthUser):
     if not server_id:
         raise HTTPException(404, f"Channel ID '{channel_id}' doesn't belong to any server")
     is_server_owner(db, server_id, user_id)
-    return user_id
+    return user_id, server_id
 IsChannelOwner = Annotated[str, Depends(is_channel_owner)]
 
 def has_channel_access(db: Database, channel_id: str, user_id: AuthUser):
@@ -484,17 +484,19 @@ async def create_channel(server_id: str, req: ChannelCreateRequest, db: Database
 
     await sio.emit("create_channel", channel.to_dict(), room_path("server", server_id))
 
-@v1.get("/server/{server_id}/channel/{channel_id}")
-async def get_channel_info(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner):
+@v1.get("/channel/{channel_id}")
+async def get_channel_info(channel_id: str, db: Database, auth: IsChannelOwner):
+    user_id, server_id = auth
     channel = db.scalar(select(Channel).where(Channel.id == channel_id, Channel.server_id == server_id))
     if not channel:
         raise HTTPException(401, f"Not authorised to get info of channel ID '{channel_id}'")
     return channel
 
-@v1.patch("/server/{server_id}/channel/{channel_id}")
-async def update_channel_info(server_id: str, channel_id: str, req: Annotated[ChannelEditRequest, Form()], db: Database, user_id: IsServerOwner):
+@v1.patch("/channel/{channel_id}")
+async def update_channel_info(channel_id: str, req: Annotated[ChannelEditRequest, Form()], db: Database, auth: IsChannelOwner):
+    user_id, server_id = auth
     values = req.model_dump()
-    channel = db.scalar(update(Channel).where(Channel.id == channel_id, Channel.server_id == server_id).values(values).returning(Channel)); 
+    channel = db.scalar(update(Channel).where(Channel.id == channel_id, Channel.server_id == server_id).values(values).returning(Channel))
     if not channel:
         raise HTTPException(401, f"Not authorised to edit channel ID '{channel_id}'")
     db.commit()
@@ -505,8 +507,9 @@ async def update_channel_info(server_id: str, channel_id: str, req: Annotated[Ch
 async def get_channels(server_id: str, db: Database, user_id: HasServerAccess):
     return db.scalars(select(Channel).where(Channel.server_id == server_id)).all()
 
-@v1.delete("/server/{server_id}/channel/{channel_id}", status_code=202, response_class=Response)
-async def delete_channel(server_id: str, channel_id: str, db: Database, user_id: IsServerOwner):
+@v1.delete("/channel/{channel_id}", status_code=202, response_class=Response)
+async def delete_channel(channel_id: str, db: Database, auth: IsChannelOwner):
+    user_id, server_id = auth
     channel = db.scalar(select(Channel).where(Channel.id == channel_id, Channel.server_id == server_id))
     if not channel:
         raise HTTPException(401, f"Not authorised to delete channel ID '{channel_id}'")
