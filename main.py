@@ -347,7 +347,7 @@ IsInPermittedRole = Annotated[str, Depends(is_in_permitted_role)]
 
 def has_auth_for_channel(db: Database, channel_id: str, user_id: AuthUser):
     server_id = db.scalar(select(Channel.server_id).where(Channel.id == channel_id))
-    if server_id is None:
+    if not server_id:
         raise HTTPException(404, f"Channel ID '{channel_id}' doesn't belong to any server")
     is_server_member(db, server_id, user_id)
     return user_id
@@ -468,7 +468,7 @@ async def get_channel_info(server_id: str, channel_id: str, db: Database, user_i
 async def update_channel_info(server_id: str, channel_id: str, req: Annotated[ChannelEditRequest, Form()], db: Database, user_id: IsServerOwner):
     values = req.model_dump()
     channel = db.scalar(update(Channel).where(Channel.id == channel_id, Channel.server_id == server_id).values(values).returning(Channel)); 
-    if channel is None:
+    if not channel:
         raise HTTPException(401, f"Not authorised to edit channel ID '{channel_id}'")
     db.commit()
     await sio.emit("modify_channel", channel.to_dict(), room_path("server", server_id))
@@ -513,7 +513,7 @@ async def create_message(channel_id: str, req: MessageCreateRequest, db: Databas
 async def edit_message(message_id: str, req: MessageEditRequest, db: Database, user_id: AuthUser):
     msg = db.scalar(update(Message).where(Message.id == message_id, Message.sender_id == user_id)
         .values({"message": req.message, "edited": func.now()}).returning(Message)); 
-    if msg is None:
+    if not msg:
         raise HTTPException(401, f"Not authorised to edit message ID '{message_id}'")
     db.commit()
 
@@ -562,7 +562,7 @@ async def update_user_picture(db: Database, user_id: AuthUser,
 @v1.post("/upload/attachment", response_class=Response)
 async def upload_attachment(attachment: UploadFile, user_id: AuthUser):
     MAX_SIZE = 16 * 1024 * 1024 # 16 mb
-    if attachment.filename is None or attachment.size is None:
+    if not attachment.filename or not attachment.size:
         raise HTTPException(422, "No filename or content length provided")
     if attachment.size > MAX_SIZE:
         raise HTTPException(413, f"Exceeding max upload limit of {MAX_SIZE/1024/1024} mb")
