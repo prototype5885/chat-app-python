@@ -422,6 +422,12 @@ async def update_user_info(req: Annotated[UserEditRequest, Form()], db: Database
     db.execute(update(User).where(User.id == user_id).values(values)); db.commit()
     return values
 
+@v1.post("/user/upload/avatar", status_code=202, response_class=Response)
+async def upload_user_avatar(avatar: UploadFile, db: Database, user_id: AuthUser):
+    file_hash = await save_picture(await avatar.read(), "public/avatars", (256, 256), crop_square=True)
+    db.execute(update(User).where(User.id == user_id).values(picture=file_hash))
+    db.commit()
+
 @v1.post("/server")
 async def create_server(req: ServerCreateRequest, db: Database, user_id: AuthUser):
     server = Server(id=str(ULID()), owner_id=user_id, name=req.name)
@@ -443,6 +449,15 @@ async def update_server_info(server_id: str, req: Annotated[ServerEditRequest, F
     values = req.model_dump()
     db.execute(update(Server).where(Server.id == server_id, Server.owner_id ==  user_id).values(values)); db.commit()
     return values
+
+@v1.post("/server/{server_id}/upload/avatar", status_code=202, response_class=Response)
+async def upload_server_avatar(avatar: UploadFile, server_id: str, db: Database, user_id: AuthUser):
+    file_hash = await save_picture(await avatar.read(), "public/avatars", (256, 256), crop_square=True)
+    result = db.scalar(update(Server).where(Server.id == server_id, Server.owner_id == user_id)
+        .values(picture=file_hash).returning(Server.id)); db.commit()
+    if not result:
+        raise HTTPException(401, f"Not authorised to update avatar of server ID '{server_id}'")
+    db.commit()
 
 @v1.get("/servers")
 async def get_servers(db: Database, user_id: AuthUser):
@@ -550,23 +565,6 @@ async def get_messages(channel_id: str, db: Database, user_id: AuthUserChannel):
 async def typing(db: Database, value: Literal["start", "stop"], channel_id: str, user_id: AuthUserChannel):
     display_name = get_display_name(db, user_id)
     await sio.emit(f"{value}_typing", display_name, room_path("channel", channel_id))
-
-@v1.post("/upload/avatar/{target}", status_code=202, response_class=Response)
-async def update_user_picture(db: Database, user_id: AuthUser, 
-    avatar: UploadFile, target: Literal["user", "server"], server_id: str | None = None
-):
-    file_hash = await save_picture(await avatar.read(), "public/avatars", (256, 256), crop_square=True)
-
-    if target == "user":
-        result = db.scalar(update(User).where(User.id == user_id)
-                .values(picture=file_hash).returning(User.id)); db.commit()
-    elif target == "server" and server_id:
-        result = db.scalar(update(Server).where(Server.id == server_id, Server.owner_id == user_id)
-                .values(picture=file_hash).returning(Server.id)); db.commit()
-    else: # if server_id wasn't provided
-        raise HTTPException(400)
-    if not result: # if no row was updated, possibly if server_id doesn't point to a real server
-        raise HTTPException(401, f"Not authorised to update avatar of server ID '{server_id}'")
 
 @v1.post("/upload/attachment", response_class=Response)
 async def upload_attachment(attachment: UploadFile, user_id: AuthUser):
