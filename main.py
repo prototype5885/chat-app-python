@@ -260,6 +260,15 @@ async def sio_is_server_member(sid: str, server_id: str) -> str | None:
     with Session(engine) as session:
         try: is_server_member(session, server_id, user_id)
         except Exception as e: return str(e)
+
+async def sio_is_channel_member(sid: str, channel_id: str) -> str | None:
+    sio_session = await sio.get_session(sid)
+    user_id = sio_session.get("user_id")
+    assert type(user_id) == str
+
+    with Session(engine) as session:
+        try: has_auth_for_channel(session, channel_id, user_id)
+        except Exception as e: return str(e)
     
 async def subscribe(sid: str, room_type: RoomType, target: str):
     for room in sio.rooms(sid): 
@@ -294,8 +303,8 @@ async def subscribe_to_channel_list(sid: str, server_id: str):
     await subscribe(sid, "server", server_id)
 
 @sio.event
-async def subscribe_to_message_list(sid: str, server_id: str, channel_id: str):
-    if issue := await sio_is_server_member(sid, server_id): return issue
+async def subscribe_to_message_list(sid: str, channel_id: str):
+    if issue := await sio_is_channel_member(sid, channel_id): return issue
     await subscribe(sid, "channel", channel_id)
 
 
