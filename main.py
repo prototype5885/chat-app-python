@@ -569,8 +569,11 @@ async def get_messages(channel_id: str, db: Database, user_id: HasChannelAccess)
 
 @v1.post("/channel/{channel_id}/typing/{value}", status_code=202, response_class=Response)
 async def typing(db: Database, value: Literal["start", "stop"], channel_id: str, user_id: HasChannelAccess):
-    display_name = get_display_name(db, user_id)
-    await sio.emit(f"{value}_typing", display_name, room_path("channel", channel_id))
+    if value == "start":
+        data = {"user_id": user_id, "display_name": get_display_name(db, user_id)}
+    else:
+        data = user_id
+    await sio.emit(f"{value}_typing", data, room_path("channel", channel_id))
 
 @v1.post("/upload/attachment", response_class=Response)
 async def upload_attachment(attachment: UploadFile, user_id: AuthUser):
