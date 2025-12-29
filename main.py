@@ -295,7 +295,7 @@ async def connect(sid: str, env):
 
 @sio.event
 async def disconnect(sid: str, reason):
-    print(f"Sid '{sid}' disconnected from Socket.IO, reason: {reason}")
+    print(f"Sid '{sid}' disconnected from Socket.IO, reason: '{reason}'")
 
 @sio.event
 async def subscribe_to_channel_list(sid: str, server_id: str):
@@ -336,7 +336,7 @@ AuthUser = Annotated[str, Depends(auth_user)]
 def is_server_owner(db: Database, server_id: str, user_id: AuthUser):
     is_owner = db.scalar(select(exists().where(Server.id == server_id, Server.owner_id == user_id)))
     if not is_owner:
-        raise HTTPException(401, "Not owner of server, which may not even exist")
+        raise HTTPException(401, f"Not owner of server ID '{server_id}', which may not even exist")
     return user_id
 IsServerOwner = Annotated[str, Depends(is_server_owner)]
 
@@ -345,7 +345,7 @@ def has_server_access(db: Database, server_id: str, user_id: AuthUser):
     is_member = exists().where(Server_Member.server_id == server_id, Server_Member.member_id == user_id)
     result = db.scalar(select(is_owner | is_member))
     if not result:
-        raise HTTPException(401, "Not member or owner of server, which may not even exist")
+        raise HTTPException(401, f"Not member or owner of server ID '{server_id}', which may not even exist")
     return user_id
 HasServerAccess = Annotated[str, Depends(has_server_access)]
 
@@ -581,7 +581,7 @@ async def upload_attachment(attachment: UploadFile, user_id: AuthUser):
     if not attachment.filename or not attachment.size:
         raise HTTPException(422, "No filename or content length provided")
     if attachment.size > MAX_SIZE:
-        raise HTTPException(413, f"Exceeding max upload limit of {MAX_SIZE/1024/1024} mb")
+        raise HTTPException(413, f"Exceeding max upload limit of '{MAX_SIZE/1024/1024}' mb")
 
     temp_path = FilePath(f"public/attachments/temp/{os.urandom(16).hex()}")
     os.makedirs(os.path.dirname(temp_path), exist_ok=True)
