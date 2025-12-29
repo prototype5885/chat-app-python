@@ -469,7 +469,7 @@ async def update_channel_info(server_id: str, channel_id: str, req: Annotated[Ch
     values = req.model_dump()
     channel = db.scalar(update(Channel).where(Channel.id == channel_id, Channel.server_id == server_id).values(values).returning(Channel)); 
     if channel is None:
-        raise HTTPException(401)
+        raise HTTPException(401, f"Not authorised to edit channel ID '{channel_id}'")
     db.commit()
     await sio.emit("modify_channel", channel.to_dict(), room_path("server", server_id))
     return values
