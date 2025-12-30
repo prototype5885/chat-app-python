@@ -478,7 +478,7 @@ async def update_user_info(req: Annotated[UserEditRequest, Form()], db: Database
 @v1.post("/user/upload/avatar", status_code=202, response_class=Response)
 async def upload_user_avatar(avatar: UploadFile, db: Database, user_id: AuthUser):
     file_hash = await save_picture(await avatar.read(), "public/avatars", (256, 256), crop_square=True)
-    db.execute(update(User).where(User.id == user_id).values(picture=file_hash))
+    db.execute(update(User).where(User.id == user_id).values(picture=file_hash).returning(User.id)).scalar_one()
     db.commit()
 
 @v1.post("/server", response_model=ServerSchema)
@@ -506,7 +506,8 @@ async def update_server_info(server_id: str, req: Annotated[ServerEditRequest, F
 @v1.post("/server/{server_id}/upload/avatar", response_class=Response)
 async def upload_server_avatar(avatar: UploadFile, server_id: str, db: Database, user_id: IsServerOwner):
     file_hash = await save_picture(await avatar.read(), "public/avatars", (256, 256), crop_square=True)
-    db.scalar(update(Server).where(Server.id == server_id, Server.owner_id == user_id).values(picture=file_hash))
+    db.execute(update(Server).where(Server.id == server_id, Server.owner_id == user_id)
+        .values(picture=file_hash).returning(Server.id)).scalar_one()
     db.commit()
 
 @v1.get("/servers", response_model=list[ServerSchema])
@@ -592,7 +593,7 @@ async def create_message(channel_id: str, req: MessageCreateRequest, db: Databas
 @v1.patch("/message/{message_id}", status_code=202, response_class=Response)
 async def edit_message(message_id: UlidStr, req: MessageEditRequest, db: Database, user_id: AuthUser):
     msg = db.scalar(update(Message).where(Message.id == message_id, Message.sender_id == user_id)
-        .values({"message": req.message, "edited": func.now()}).returning(Message)); 
+        .values({"message": req.message, "edited": func.now()}).returning(Message))
     if not msg:
         raise HTTPException(401, f"Not authorised to edit message ID '{message_id}'")
     db.commit()
