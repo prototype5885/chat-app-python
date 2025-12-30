@@ -471,7 +471,7 @@ async def get_user_info(db: Database, user_id: AuthUser):
 
 @v1.patch("/user", response_class=Response)
 async def update_user_info(req: Annotated[UserEditRequest, Form()], db: Database, user_id: AuthUser):
-    values = req.model_dump()
+    values = req.model_dump(exclude_unset=True)
     db.execute(update(User).where(User.id == user_id).values(values))
     db.commit()
 
@@ -499,7 +499,7 @@ async def get_server_info(server_id: UlidStr, db: Database, user_id: AuthUser):
 
 @v1.patch("/server/{server_id}", response_class=Response)
 async def update_server_info(server_id: str, req: Annotated[ServerEditRequest, Form()], db: Database, user_id: IsServerOwner):
-    values = req.model_dump()
+    values = req.model_dump(exclude_unset=True)
     db.execute(update(Server).where(Server.id == server_id, Server.owner_id ==  user_id).values(values))
     db.commit()
 
@@ -545,7 +545,7 @@ async def get_channel_info(channel_id: str, db: Database, auth: IsChannelOwner):
 @v1.patch("/channel/{channel_id}", status_code=202, response_class=Response)
 async def update_channel_info(channel_id: str, req: Annotated[ChannelEditRequest, Form()], db: Database, auth: IsChannelOwner):
     user_id, server_id = auth
-    values = req.model_dump()
+    values = req.model_dump(exclude_unset=True)
     channel = db.scalar(update(Channel).where(Channel.id == channel_id, Channel.server_id == server_id).values(values).returning(Channel))
     if not channel:
         raise HTTPException(401, f"Not authorised to edit channel ID '{channel_id}'")
