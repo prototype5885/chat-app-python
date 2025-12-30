@@ -13,7 +13,7 @@ from fastapi.security import APIKeyCookie
 from sqlalchemy import CHAR, Engine, ForeignKey, String, create_engine, desc, event, exists, func, or_, select, text, union, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
-from pydantic import BaseModel, EmailStr, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field, StringConstraints, model_validator
 from argon2 import PasswordHasher, exceptions
 from socketio import AsyncServer, ASGIApp
 from PIL import Image
@@ -125,6 +125,7 @@ class Server_Member(Base):
 RoomType = Literal["server", "channel"]
 
 # Pydantic types:
+UlidStr = Annotated[str, StringConstraints(pattern=r"^[0-7][0-9A-HJKMNP-TV-Z]{25}$")]
 UsernameStr = Annotated[str, Field(**USERNAME_LEN.kwargs())]
 PasswordStr = Annotated[str, Field(**PASSWORD_LEN.kwargs())]
 DisplayNameStr = Annotated[str, Field(**DISPLAY_NAME_LEN.kwargs())]
@@ -380,14 +381,14 @@ def auth_user(db: Database, token: str = Depends(APIKeyCookie(name="token"))):
     return user_id
 AuthUser = Annotated[str, Depends(auth_user)]
 
-def is_server_owner(db: Database, server_id: str, user_id: AuthUser):
+def is_server_owner(db: Database, server_id: UlidStr, user_id: AuthUser):
     is_owner = db.scalar(select(exists().where(Server.id == server_id, Server.owner_id == user_id)))
     if not is_owner:
         raise HTTPException(401, f"Not owner of server ID '{server_id}', which may not even exist")
     return user_id
 IsServerOwner = Annotated[str, Depends(is_server_owner)]
 
-def has_server_access(db: Database, server_id: str, user_id: AuthUser):
+def has_server_access(db: Database, server_id: UlidStr, user_id: AuthUser):
     is_owner = exists().where(Server.id == server_id, Server.owner_id == user_id)
     is_member = exists().where(Server_Member.server_id == server_id, Server_Member.member_id == user_id)
     result = db.scalar(select(is_owner | is_member))
@@ -396,7 +397,7 @@ def has_server_access(db: Database, server_id: str, user_id: AuthUser):
     return user_id
 HasServerAccess = Annotated[str, Depends(has_server_access)]
 
-def is_channel_owner(db: Database, channel_id: str, user_id: AuthUser):
+def is_channel_owner(db: Database, channel_id: UlidStr, user_id: AuthUser):
     server_id = db.scalar(select(Channel.server_id).where(Channel.id == channel_id))
     if not server_id:
         raise HTTPException(404, f"Channel ID '{channel_id}' doesn't belong to any server")
@@ -404,7 +405,7 @@ def is_channel_owner(db: Database, channel_id: str, user_id: AuthUser):
     return user_id, server_id
 IsChannelOwner = Annotated[str, Depends(is_channel_owner)]
 
-def has_channel_access(db: Database, channel_id: str, user_id: AuthUser):
+def has_channel_access(db: Database, channel_id: UlidStr, user_id: AuthUser):
     server_id = db.scalar(select(Channel.server_id).where(Channel.id == channel_id))
     if not server_id:
         raise HTTPException(404, f"Channel ID '{channel_id}' doesn't belong to any server")
@@ -490,7 +491,7 @@ async def create_server(req: ServerCreateRequest, db: Database, user_id: AuthUse
     return server
 
 @v1.get("/server/{server_id}", response_model=ServerSchema)
-async def get_server_info(server_id: str, db: Database, user_id: AuthUser):
+async def get_server_info(server_id: UlidStr, db: Database, user_id: AuthUser):
     server = db.scalar(select(Server).where(Server.id == server_id, Server.owner_id == user_id))
     if not server:
         raise HTTPException(401, f"You don't own any server with ID '{server_id}'")
@@ -503,7 +504,7 @@ async def update_server_info(server_id: str, req: Annotated[ServerEditRequest, F
     db.commit()
 
 @v1.post("/server/{server_id}/upload/avatar", response_class=Response)
-async def upload_server_avatar(avatar: UploadFile, server_id: str, db: Database, user_id: AuthUser):
+async def upload_server_avatar(avatar: UploadFile, server_id: UlidStr, db: Database, user_id: AuthUser):
     file_hash = await save_picture(await avatar.read(), "public/avatars", (256, 256), crop_square=True)
     result = db.scalar(update(Server).where(Server.id == server_id, Server.owner_id == user_id)
         .values(picture=file_hash).returning(Server.id))
@@ -517,7 +518,7 @@ async def get_servers(db: Database, user_id: AuthUser):
         or_(Server.owner_id == user_id, Server.members.any(Server_Member.member_id == user_id)))).all()
 
 @v1.delete("/server/{server_id}", status_code=202, response_class=Response)
-async def delete_server(server_id: str, db: Database, user_id: AuthUser):
+async def delete_server(server_id: UlidStr, db: Database, user_id: AuthUser):
     server = db.scalar(select(Server).where(Server.id == server_id, Server.owner_id == user_id))
     if not server:
         raise HTTPException(401, f"You don't own any server with ID '{server_id}'")
@@ -592,7 +593,7 @@ async def create_message(channel_id: str, req: MessageCreateRequest, db: Databas
     await sio.emit("create_message", data, room_path("channel", channel_id))
 
 @v1.patch("/message/{message_id}", status_code=202, response_class=Response)
-async def edit_message(message_id: str, req: MessageEditRequest, db: Database, user_id: AuthUser):
+async def edit_message(message_id: UlidStr, req: MessageEditRequest, db: Database, user_id: AuthUser):
     msg = db.scalar(update(Message).where(Message.id == message_id, Message.sender_id == user_id)
         .values({"message": req.message, "edited": func.now()}).returning(Message)); 
     if not msg:
@@ -603,7 +604,7 @@ async def edit_message(message_id: str, req: MessageEditRequest, db: Database, u
     await sio.emit("edit_message", data, room_path("channel", msg.channel_id))
 
 @v1.delete("/message/{message_id}", status_code=202, response_class=Response)
-async def delete_message(message_id: str, db: Database, user_id: AuthUser):
+async def delete_message(message_id: UlidStr, db: Database, user_id: AuthUser):
     msg = db.scalar(select(Message).where(Message.id == message_id, Message.sender_id == user_id))
     if not msg:
         raise HTTPException(401, f"Not authorised to delete message ID '{message_id}'")
