@@ -504,12 +504,9 @@ async def update_server_info(server_id: str, req: Annotated[ServerEditRequest, F
     db.commit()
 
 @v1.post("/server/{server_id}/upload/avatar", response_class=Response)
-async def upload_server_avatar(avatar: UploadFile, server_id: UlidStr, db: Database, user_id: AuthUser):
+async def upload_server_avatar(avatar: UploadFile, server_id: str, db: Database, user_id: IsServerOwner):
     file_hash = await save_picture(await avatar.read(), "public/avatars", (256, 256), crop_square=True)
-    result = db.scalar(update(Server).where(Server.id == server_id, Server.owner_id == user_id)
-        .values(picture=file_hash).returning(Server.id))
-    if not result:
-        raise HTTPException(401, f"Not authorised to update avatar of server ID '{server_id}'")
+    db.scalar(update(Server).where(Server.id == server_id, Server.owner_id == user_id).values(picture=file_hash))
     db.commit()
 
 @v1.get("/servers", response_model=list[ServerSchema])
