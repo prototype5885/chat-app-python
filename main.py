@@ -150,20 +150,39 @@ class UserLoginRequest(BaseModel):
     email: EmailStr
     password: PasswordStr
 
+class UserInfoResponse(BaseModel):
+    username: UsernameStr
+    display_name: DisplayNameStr
+    picture: Optional[str]
+    custom_status: Optional[str]
+
 class UserEditRequest(BaseModel):
     display_name: Optional[DisplayNameStr] = None
 
-class UserResponse(BaseModel):
+class UserMemberResponse(BaseModel):
     user_id: str
-    display_name: str
+    display_name: DisplayNameStr
     picture: Optional[str] = None
     custom_status: Optional[str] = None
+
+class ServerSchema(BaseModel):
+    id: str
+    owner_id: str
+    name: ServerNameStr
+    picture: Optional[str] = None
+    banner: Optional[str] = None
+    roles: Optional[str] = None
 
 class ServerCreateRequest(BaseModel):
     name: ServerNameStr
 
 class ServerEditRequest(BaseModel):
     name: Optional[ServerNameStr] = None
+
+class ChannelSchema(BaseModel):
+    id: str
+    server_id: str
+    name: ChannelNameStr
 
 class ChannelCreateRequest(BaseModel):
     name: ChannelNameStr
@@ -177,7 +196,15 @@ class MessageCreateRequest(BaseModel):
 class MessageEditRequest(BaseModel):
     message: MessageStr
 
+class MessageEditResponse(BaseModel):
+    class Config: from_attributes = True
+    id: str
+    message: MessageStr
+    attachments: Optional[str] = None
+    edited: Optional[str] = None
+
 class MessageResponse(BaseModel):
+    class Config: from_attributes = True
     id: str
     sender_id: str
     channel_id: str
@@ -186,7 +213,11 @@ class MessageResponse(BaseModel):
     edited: Optional[str] = None
     display_name: DisplayNameStr
     picture: Optional[str] = None
-    
+
+class TypingSchema(BaseModel):
+    user_id: str
+    display_name: Optional[str] = None
+
 
 # Helpers
 def room_path(room_type: RoomType, id: str):
@@ -390,7 +421,8 @@ async def register_user(req: Annotated[UserRegisterRequest, Form()], db: Databas
     try:
         user = User(id=str(ULID()), email=req.email, username=req.username, display_name=req.username, 
                     password=password_hasher.hash(req.password))
-        db.add(user); db.commit()
+        db.add(user)
+        db.commit()
     except IntegrityError:
         raise HTTPException(409, "User with same e-mail or username already exists")
     return RedirectResponse("/login.html", 303)
@@ -420,7 +452,8 @@ async def logout_user(response: Response):
 @v1.delete("/user/delete", status_code=204, response_class=Response)
 async def delete_user(db: Database, user_id: AuthUser):
     user = db.execute(select(User).where(User.id == user_id)).scalar_one()
-    db.delete(user); db.commit()
+    db.delete(user)
+    db.commit()
 
 @v1.get("/test", response_class=PlainTextResponse)
 async def test():
@@ -430,16 +463,16 @@ async def test():
 async def get_user_id(user_id: AuthUser):
     return user_id
 
-@v1.get("/user")
+@v1.get("/user", response_model=UserInfoResponse)
 async def get_user_info(db: Database, user_id: AuthUser):
-    display_name, picture = db.execute(select(User.display_name, User.picture).where(User.id == user_id)).one()
-    return {"display_name": display_name, "picture": picture}
+    return db.execute(select(User.username, User.display_name, User.picture, User.custom_status)
+        .where(User.id == user_id)).one()
 
-@v1.patch("/user")
+@v1.patch("/user", response_class=Response)
 async def update_user_info(req: Annotated[UserEditRequest, Form()], db: Database, user_id: AuthUser):
     values = req.model_dump()
-    db.execute(update(User).where(User.id == user_id).values(values)); db.commit()
-    return values
+    db.execute(update(User).where(User.id == user_id).values(values))
+    db.commit()
 
 @v1.post("/user/upload/avatar", status_code=202, response_class=Response)
 async def upload_user_avatar(avatar: UploadFile, db: Database, user_id: AuthUser):
@@ -447,7 +480,7 @@ async def upload_user_avatar(avatar: UploadFile, db: Database, user_id: AuthUser
     db.execute(update(User).where(User.id == user_id).values(picture=file_hash))
     db.commit()
 
-@v1.post("/server")
+@v1.post("/server", response_model=ServerSchema)
 async def create_server(req: ServerCreateRequest, db: Database, user_id: AuthUser):
     server = Server(id=str(ULID()), owner_id=user_id, name=req.name)
     db.add(server)
@@ -456,29 +489,29 @@ async def create_server(req: ServerCreateRequest, db: Database, user_id: AuthUse
     db.refresh(server)
     return server
 
-@v1.get("/server/{server_id}")
+@v1.get("/server/{server_id}", response_model=ServerSchema)
 async def get_server_info(server_id: str, db: Database, user_id: AuthUser):
     server = db.scalar(select(Server).where(Server.id == server_id, Server.owner_id == user_id))
     if not server:
         raise HTTPException(401, f"You don't own any server with ID '{server_id}'")
     return server
 
-@v1.patch("/server/{server_id}")
+@v1.patch("/server/{server_id}", response_class=Response)
 async def update_server_info(server_id: str, req: Annotated[ServerEditRequest, Form()], db: Database, user_id: IsServerOwner):
     values = req.model_dump()
-    db.execute(update(Server).where(Server.id == server_id, Server.owner_id ==  user_id).values(values)); db.commit()
-    return values
+    db.execute(update(Server).where(Server.id == server_id, Server.owner_id ==  user_id).values(values))
+    db.commit()
 
-@v1.post("/server/{server_id}/upload/avatar", status_code=202, response_class=Response)
+@v1.post("/server/{server_id}/upload/avatar", response_class=Response)
 async def upload_server_avatar(avatar: UploadFile, server_id: str, db: Database, user_id: AuthUser):
     file_hash = await save_picture(await avatar.read(), "public/avatars", (256, 256), crop_square=True)
     result = db.scalar(update(Server).where(Server.id == server_id, Server.owner_id == user_id)
-        .values(picture=file_hash).returning(Server.id)); db.commit()
+        .values(picture=file_hash).returning(Server.id))
     if not result:
         raise HTTPException(401, f"Not authorised to update avatar of server ID '{server_id}'")
     db.commit()
 
-@v1.get("/servers")
+@v1.get("/servers", response_model=list[ServerSchema])
 async def get_servers(db: Database, user_id: AuthUser):
     return db.scalars(select(Server).where(
         or_(Server.owner_id == user_id, Server.members.any(Server_Member.member_id == user_id)))).all()
@@ -489,18 +522,20 @@ async def delete_server(server_id: str, db: Database, user_id: AuthUser):
     if not server:
         raise HTTPException(401, f"You don't own any server with ID '{server_id}'")
     
-    db.delete(server); db.commit()
+    db.delete(server)
+    db.commit()
     
     await sio.emit("delete_server", server_id, room_path("server", server_id))
 
 @v1.post("/server/{server_id}/channel", status_code=202, response_class=Response)
 async def create_channel(server_id: str, req: ChannelCreateRequest, db: Database, user_id: IsServerOwner):
     channel = Channel(id=str(ULID()), server_id=server_id, name=req.name)
-    db.add(channel); db.commit()
+    db.add(channel)
+    db.commit()
 
     await sio.emit("create_channel", channel.to_dict(), room_path("server", server_id))
 
-@v1.get("/channel/{channel_id}")
+@v1.get("/channel/{channel_id}", response_model=ChannelSchema)
 async def get_channel_info(channel_id: str, db: Database, auth: IsChannelOwner):
     user_id, server_id = auth
     channel = db.scalar(select(Channel).where(Channel.id == channel_id, Channel.server_id == server_id))
@@ -508,7 +543,7 @@ async def get_channel_info(channel_id: str, db: Database, auth: IsChannelOwner):
         raise HTTPException(401, f"Not authorised to get info of channel ID '{channel_id}'")
     return channel
 
-@v1.patch("/channel/{channel_id}")
+@v1.patch("/channel/{channel_id}", status_code=202, response_class=Response)
 async def update_channel_info(channel_id: str, req: Annotated[ChannelEditRequest, Form()], db: Database, auth: IsChannelOwner):
     user_id, server_id = auth
     values = req.model_dump()
@@ -517,9 +552,8 @@ async def update_channel_info(channel_id: str, req: Annotated[ChannelEditRequest
         raise HTTPException(401, f"Not authorised to edit channel ID '{channel_id}'")
     db.commit()
     await sio.emit("modify_channel", channel.to_dict(), room_path("server", server_id))
-    return values
 
-@v1.get("/server/{server_id}/channels")
+@v1.get("/server/{server_id}/channels", response_model=list[ChannelSchema])
 async def get_channels(server_id: str, db: Database, user_id: HasServerAccess):
     return db.scalars(select(Channel).where(Channel.server_id == server_id)).all()
 
@@ -530,29 +564,31 @@ async def delete_channel(channel_id: str, db: Database, auth: IsChannelOwner):
     if not channel:
         raise HTTPException(401, f"Not authorised to delete channel ID '{channel_id}'")
     
-    db.delete(channel); db.commit()
+    db.delete(channel)
+    db.commit()
 
     await sio.emit("delete_channel", channel_id, room_path("server", server_id))
 
-@v1.get("/server/{server_id}/members")
-async def get_members(server_id: str, db: Database, _: HasServerAccess) -> list[UserResponse]:
+@v1.get("/server/{server_id}/members", response_model=list[UserMemberResponse])
+async def get_members(server_id: str, db: Database, _: HasServerAccess):
     owner_stmt = (select(User.id, User.display_name, User.picture, User.custom_status).join(Server, Server.owner_id == User.id)
                   .where(Server.id == server_id))
     member_stmt = (select(User.id, User.display_name, User.picture, User.custom_status).join(Server_Member, Server_Member.member_id == User.id)
                    .where(Server_Member.server_id == server_id))
     rows = db.execute(union(owner_stmt, member_stmt)).all()
 
-    return [UserResponse(user_id=user_id, display_name=display_name, picture=picture, custom_status=custom_status) 
+    return [UserMemberResponse(user_id=user_id, display_name=display_name, picture=picture, custom_status=custom_status) 
         for user_id, display_name, picture, custom_status in rows]
 
 @v1.post("/channel/{channel_id}/message", status_code=202, response_class=Response)
 async def create_message(channel_id: str, req: MessageCreateRequest, db: Database, user_id: HasChannelAccess):
     message = Message(id=str(ULID()), sender_id=user_id, channel_id=channel_id, message=req.message)
-    db.add(message); db.commit()
+    db.add(message)
+    db.commit()
 
     display_name, picture = db.execute(select(User.display_name, User.picture).where(User.id == user_id)).one()
 
-    data = {**message.to_dict(), "display_name": display_name, "picture": picture}
+    data = MessageResponse(**message.to_dict(), display_name=display_name, picture=picture).model_dump()
     await sio.emit("create_message", data, room_path("channel", channel_id))
 
 @v1.patch("/message/{message_id}", status_code=202, response_class=Response)
@@ -563,21 +599,22 @@ async def edit_message(message_id: str, req: MessageEditRequest, db: Database, u
         raise HTTPException(401, f"Not authorised to edit message ID '{message_id}'")
     db.commit()
 
-    data = {"id": msg.id, "message": msg.message, "edited": msg.edited}
+    data = MessageEditResponse.model_validate(msg).model_dump()
     await sio.emit("edit_message", data, room_path("channel", msg.channel_id))
 
 @v1.delete("/message/{message_id}", status_code=202, response_class=Response)
 async def delete_message(message_id: str, db: Database, user_id: AuthUser):
-    message = db.scalar(select(Message).where(Message.id == message_id, Message.sender_id == user_id))
-    if not message:
+    msg = db.scalar(select(Message).where(Message.id == message_id, Message.sender_id == user_id))
+    if not msg:
         raise HTTPException(401, f"Not authorised to delete message ID '{message_id}'")
     
-    db.delete(message); db.commit()
+    db.delete(msg)
+    db.commit()
 
-    await sio.emit("delete_message", message.id, room_path("channel", message.channel_id))
+    await sio.emit("delete_message", msg.id, room_path("channel", msg.channel_id))
 
-@v1.get("/channel/{channel_id}/messages")
-async def get_messages(channel_id: str, db: Database, user_id: HasChannelAccess) -> list[MessageResponse]:
+@v1.get("/channel/{channel_id}/messages", response_model=list[MessageResponse])
+async def get_messages(channel_id: str, db: Database, user_id: HasChannelAccess):
     results = db.execute(select(Message, User.display_name, User.picture).join(User)
                       .where(Message.channel_id == channel_id).order_by(desc(Message.id)).limit(50)).all()
     return [MessageResponse(**message.to_dict(), display_name=display_name, picture=picture) 
@@ -586,7 +623,7 @@ async def get_messages(channel_id: str, db: Database, user_id: HasChannelAccess)
 @v1.post("/channel/{channel_id}/typing/{value}", status_code=202, response_class=Response)
 async def typing(db: Database, value: Literal["start", "stop"], channel_id: str, user_id: HasChannelAccess):
     if value == "start":
-        data = {"user_id": user_id, "display_name": get_display_name(db, user_id)}
+        data = TypingSchema(user_id=user_id, display_name=get_display_name(db, user_id)).model_dump()
     else:
         data = user_id
     await sio.emit(f"{value}_typing", data, room_path("channel", channel_id))
