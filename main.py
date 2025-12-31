@@ -230,7 +230,7 @@ def room_path(room_type: RoomType, id: str):
 def get_display_name(db: Database, user_id: str): # TODO not optimal solution, extra query
     return db.execute(select(User.display_name).where(User.id == user_id)).scalar_one()
 
-async def save_picture(file: bytes, path: str, resolution: tuple[int, int], crop_square: bool | None = None, name: str | None = None):
+def process_picture(file: bytes, resolution: tuple[int, int], crop_square: bool):
     try:
         with Image.open(io.BytesIO(file)) as img:
             if img.mode != "RGB":
@@ -244,26 +244,32 @@ async def save_picture(file: bytes, path: str, resolution: tuple[int, int], crop
             img = img.resize(resolution, Image.Resampling.LANCZOS)
             buffer = io.BytesIO()
             img.save(buffer, format="WEBP", quality=75)
-            bytes = buffer.getvalue()
+            return buffer.getvalue()
     except: 
         raise HTTPException(422, "Error processing received picture")
 
-    file_hash: str | None = None
-    if name:
-        final_path = FilePath(f"{path}/{name}")
-    else:
-        file_hash = hashlib.sha256(bytes).hexdigest()
-        final_path = FilePath(f"{path}/{file_hash}.webp")
+async def save_picture(file: bytes, path: str, resolution: tuple[int, int], crop_square: bool):
+    bytes = process_picture(file, resolution, crop_square) 
+   
+    file_hash = hashlib.sha256(bytes).hexdigest()
+    final_path = FilePath(f"{path}/{file_hash}.webp")
 
     os.makedirs(os.path.dirname(final_path), exist_ok=True)
-
     async with aiofiles.open(final_path, "wb") as f:
         await f.write(bytes)
+    return file_hash
 
-    if file_hash: 
-        return file_hash
-    return None
+async def generate_resized_picture(path: FilePath, size: int):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    async with aiofiles.open(path, "rb") as img_file:
+        bytes = process_picture(await img_file.read(), (size, size), False) 
 
+    path = FilePath(f"{path.parent}/{size}/{path.name}")
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    async with aiofiles.open(path, "wb") as f:
+        await f.write(bytes)
+    return path
 
 # Database setup
 sqlite_filename = "database/database.db"
@@ -660,16 +666,15 @@ if os.path.exists("./dist"): # serve svelte frontend from dist folder, if it's t
 serve_avatars_lock = asyncio.Lock()
 @app.get("/avatars/{name}", response_class=FileResponse)
 async def serve_avatars(user_id: AuthUser, name: PictureName, size: Optional[Literal["80", "96"]] = None):
-    base_dir = FilePath(PATH_AVATARS).resolve()
-    original_file_path = (base_dir / name).resolve()
     headers = {"Cache-Control": "private, max-age=2592000, immutable"}
+    original_file_path = FilePath(f"{PATH_AVATARS}/{name}")
 
     if not size: # if requests original
         if original_file_path.is_file():
             return FileResponse(original_file_path, headers=headers)
         raise HTTPException(404)
             
-    resized_file_path = (base_dir / size / name).resolve() # if requests resized
+    resized_file_path = FilePath(f"{PATH_AVATARS}/{size}/{name}") # if requests resized
     if resized_file_path.is_file():
         return FileResponse(resized_file_path, headers=headers)
         
@@ -677,7 +682,5 @@ async def serve_avatars(user_id: AuthUser, name: PictureName, size: Optional[Lit
         raise HTTPException(404)
     async with serve_avatars_lock:
         if not resized_file_path.is_file():
-            os.makedirs(os.path.dirname(resized_file_path), exist_ok=True)
-            async with aiofiles.open(original_file_path, "rb") as img_file:
-                await save_picture(await img_file.read(),f"{PATH_AVATARS}/{size}", (int(size), int(size)), name=name)
+            await generate_resized_picture(original_file_path, int(size))
     return FileResponse(resized_file_path, headers=headers)
