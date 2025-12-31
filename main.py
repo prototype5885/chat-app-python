@@ -655,7 +655,7 @@ if os.path.exists("./dist"): # serve svelte frontend from dist folder, if it's t
 
 # Public file handlers
 serve_avatars_lock = asyncio.Lock()
-@app.get("/avatars/{name:path}", response_class=FileResponse)
+@app.get("/avatars/{name}", response_class=FileResponse)
 async def serve_avatars(user_id: AuthUser, name: PictureName, size: Optional[Literal["80", "96"]] = None):
     base_dir = FilePath("public/avatars").resolve()
     original_file_path = (base_dir / name).resolve()
