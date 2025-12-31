@@ -614,6 +614,7 @@ async def typing(db: Database, value: Literal["start", "stop"], channel_id: str,
         data = user_id
     await sio.emit(f"{value}_typing", data, room_path("channel", channel_id))
 
+upload_attachment_lock = asyncio.Lock()
 @v1.post("/upload/attachment", response_class=Response)
 async def upload_attachment(attachment: UploadFile, user_id: AuthUser):
     MAX_SIZE = 16 * 1024 * 1024 # 16 mb
@@ -639,11 +640,12 @@ async def upload_attachment(attachment: UploadFile, user_id: AuthUser):
     hash_name = hash.hexdigest()
     final_path = FilePath(f"public/attachments/{user_id}/{hash_name}_{attachment.filename}")
 
-    os.makedirs(os.path.dirname(final_path), exist_ok=True)
-    if final_path.is_file():
-        os.remove(temp_path)
-    else:
-        shutil.move(temp_path, final_path)
+    async with upload_attachment_lock:
+        os.makedirs(os.path.dirname(final_path), exist_ok=True)
+        if final_path.is_file():
+            os.remove(temp_path)
+        else:
+            shutil.move(temp_path, final_path)
 
 app.include_router(v1)
 
