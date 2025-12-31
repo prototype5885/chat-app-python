@@ -398,17 +398,17 @@ def has_server_access(db: Database, server_id: UlidStr, user_id: AuthUser):
 HasServerAccess = Annotated[str, Depends(has_server_access)]
 
 def is_channel_owner(db: Database, channel_id: UlidStr, user_id: AuthUser):
-    server_id = db.scalar(select(Channel.server_id).where(Channel.id == channel_id))
-    if not server_id:
-        raise HTTPException(404, f"Channel ID '{channel_id}' doesn't belong to any server")
-    is_server_owner(db, server_id, user_id)
-    return user_id, server_id
-IsChannelOwner = Annotated[str, Depends(is_channel_owner)]
+    channel = db.scalar(select(Channel).where(Channel.id == channel_id))
+    if not channel:
+        raise HTTPException(404, f"Channel ID '{channel_id}' doesn't belong to any server or doesn't exist")
+    is_server_owner(db, channel.server_id, user_id)
+    return channel
+IsChannelOwner = Annotated[Channel, Depends(is_channel_owner)]
 
 def has_channel_access(db: Database, channel_id: UlidStr, user_id: AuthUser):
     server_id = db.scalar(select(Channel.server_id).where(Channel.id == channel_id))
     if not server_id:
-        raise HTTPException(404, f"Channel ID '{channel_id}' doesn't belong to any server")
+        raise HTTPException(404, f"Channel ID '{channel_id}' doesn't belong to any server or doesn't exist")
     has_server_access(db, server_id, user_id)
     return user_id
 HasChannelAccess = Annotated[str, Depends(has_channel_access)]
@@ -535,38 +535,25 @@ async def create_channel(server_id: str, req: ChannelCreateRequest, db: Database
     await sio.emit("create_channel", channel.to_dict(), room_path("server", server_id))
 
 @v1.get("/channel/{channel_id}", response_model=ChannelSchema)
-async def get_channel_info(channel_id: str, db: Database, auth: IsChannelOwner):
-    user_id, server_id = auth
-    channel = db.scalar(select(Channel).where(Channel.id == channel_id, Channel.server_id == server_id))
-    if not channel:
-        raise HTTPException(401, f"Not authorised to get info of channel ID '{channel_id}'")
+async def get_channel_info(channel: IsChannelOwner):
     return channel
 
 @v1.patch("/channel/{channel_id}", status_code=202, response_class=Response)
-async def update_channel_info(channel_id: str, req: Annotated[ChannelEditRequest, Form()], db: Database, auth: IsChannelOwner):
-    user_id, server_id = auth
+async def update_channel_info(req: Annotated[ChannelEditRequest, Form()], db: Database, channel: IsChannelOwner):
     values = req.model_dump(exclude_unset=True)
-    channel = db.scalar(update(Channel).where(Channel.id == channel_id, Channel.server_id == server_id).values(values).returning(Channel))
-    if not channel:
-        raise HTTPException(401, f"Not authorised to edit channel ID '{channel_id}'")
+    db.execute(update(Channel).where(Channel.id == channel.id).values(values).returning(Channel.id)).one()
     db.commit()
-    await sio.emit("modify_channel", channel.to_dict(), room_path("server", server_id))
+    await sio.emit("modify_channel", channel.to_dict(), room_path("server", channel.server_id))
 
 @v1.get("/server/{server_id}/channels", response_model=list[ChannelSchema])
 async def get_channels(server_id: str, db: Database, user_id: HasServerAccess):
     return db.scalars(select(Channel).where(Channel.server_id == server_id)).all()
 
 @v1.delete("/channel/{channel_id}", status_code=202, response_class=Response)
-async def delete_channel(channel_id: str, db: Database, auth: IsChannelOwner):
-    user_id, server_id = auth
-    channel = db.scalar(select(Channel).where(Channel.id == channel_id, Channel.server_id == server_id))
-    if not channel:
-        raise HTTPException(401, f"Not authorised to delete channel ID '{channel_id}'")
-    
+async def delete_channel(db: Database, channel: IsChannelOwner):
     db.delete(channel)
     db.commit()
-
-    await sio.emit("delete_channel", channel_id, room_path("server", server_id))
+    await sio.emit("delete_channel", channel.id, room_path("server", channel.server_id))
 
 @v1.get("/server/{server_id}/members", response_model=list[UserMemberResponse])
 async def get_members(server_id: str, db: Database, _: HasServerAccess):
