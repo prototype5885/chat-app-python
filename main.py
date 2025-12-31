@@ -36,6 +36,9 @@ else:
     JWT_SECRET = os.environ["JWT_SECRET"]
     print("Loaded JWT_SECRET from .env")
 
+PATH_PUBLIC = "public"
+PATH_AVATARS = "public/avatars"
+PATH_ATTACHMENTS = "public/attachments"
 
 password_hasher = PasswordHasher()
 
@@ -477,7 +480,7 @@ async def update_user_info(req: Annotated[UserEditRequest, Form()], db: Database
 
 @v1.post("/user/upload/avatar", status_code=202, response_class=Response)
 async def upload_user_avatar(avatar: UploadFile, db: Database, user_id: AuthUser):
-    file_hash = await save_picture(await avatar.read(), "public/avatars", (256, 256), crop_square=True)
+    file_hash = await save_picture(await avatar.read(), PATH_AVATARS, (256, 256), crop_square=True)
     db.execute(update(User).where(User.id == user_id).values(picture=file_hash).returning(User.id)).scalar_one()
     db.commit()
 
@@ -505,7 +508,7 @@ async def update_server_info(server_id: str, req: Annotated[ServerEditRequest, F
 
 @v1.post("/server/{server_id}/upload/avatar", response_class=Response)
 async def upload_server_avatar(avatar: UploadFile, server_id: str, db: Database, user_id: IsServerOwner):
-    file_hash = await save_picture(await avatar.read(), "public/avatars", (256, 256), crop_square=True)
+    file_hash = await save_picture(await avatar.read(), PATH_AVATARS, (256, 256), crop_square=True)
     db.execute(update(Server).where(Server.id == server_id, Server.owner_id == user_id)
         .values(picture=file_hash).returning(Server.id)).scalar_one()
     db.commit()
@@ -623,7 +626,7 @@ async def upload_attachment(attachment: UploadFile, user_id: AuthUser):
     if attachment.size > MAX_SIZE:
         raise HTTPException(413, f"Exceeding max upload limit of '{MAX_SIZE/1024/1024}' mb")
 
-    temp_path = FilePath(f"public/attachments/temp/{os.urandom(16).hex()}")
+    temp_path = FilePath(f"{PATH_ATTACHMENTS}/temp/{os.urandom(16).hex()}")
     os.makedirs(os.path.dirname(temp_path), exist_ok=True)
 
     hash = hashlib.sha256()
@@ -638,7 +641,7 @@ async def upload_attachment(attachment: UploadFile, user_id: AuthUser):
             await tmp.write(chunk)
 
     hash_name = hash.hexdigest()
-    final_path = FilePath(f"public/attachments/{user_id}/{hash_name}_{attachment.filename}")
+    final_path = FilePath(f"{PATH_ATTACHMENTS}/{user_id}/{hash_name}_{attachment.filename}")
 
     async with upload_attachment_lock:
         os.makedirs(os.path.dirname(final_path), exist_ok=True)
@@ -657,7 +660,7 @@ if os.path.exists("./dist"): # serve svelte frontend from dist folder, if it's t
 serve_avatars_lock = asyncio.Lock()
 @app.get("/avatars/{name}", response_class=FileResponse)
 async def serve_avatars(user_id: AuthUser, name: PictureName, size: Optional[Literal["80", "96"]] = None):
-    base_dir = FilePath("public/avatars").resolve()
+    base_dir = FilePath(PATH_AVATARS).resolve()
     original_file_path = (base_dir / name).resolve()
     headers = {"Cache-Control": "private, max-age=2592000, immutable"}
 
@@ -676,5 +679,5 @@ async def serve_avatars(user_id: AuthUser, name: PictureName, size: Optional[Lit
         if not resized_file_path.is_file():
             os.makedirs(os.path.dirname(resized_file_path), exist_ok=True)
             async with aiofiles.open(original_file_path, "rb") as img_file:
-                await save_picture(await img_file.read(),f"public/avatars/{size}", (int(size), int(size)), name=name)
+                await save_picture(await img_file.read(),f"{PATH_AVATARS}/{size}", (int(size), int(size)), name=name)
     return FileResponse(resized_file_path, headers=headers)
