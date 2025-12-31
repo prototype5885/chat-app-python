@@ -252,7 +252,7 @@ async def save_picture(file: bytes, path: str, resolution: tuple[int, int], crop
     bytes = process_picture(file, resolution, crop_square) 
    
     file_hash = hashlib.sha256(bytes).hexdigest()
-    final_path = FilePath(f"{path}/{file_hash}.webp")
+    final_path = FilePath(f"{path}/{file_hash[:2]}/{file_hash}.webp")
 
     os.makedirs(os.path.dirname(final_path), exist_ok=True)
     async with aiofiles.open(final_path, "wb") as f:
@@ -667,14 +667,14 @@ serve_avatars_lock = asyncio.Lock()
 @app.get("/avatars/{name}", response_class=FileResponse)
 async def serve_avatars(user_id: AuthUser, name: PictureName, size: Optional[Literal["80", "96"]] = None):
     headers = {"Cache-Control": "private, max-age=2592000, immutable"}
-    original_file_path = FilePath(f"{PATH_AVATARS}/{name}")
+    original_file_path = FilePath(f"{PATH_AVATARS}/{name[:2]}/{name}")
 
     if not size: # if requests original
         if original_file_path.is_file():
             return FileResponse(original_file_path, headers=headers)
         raise HTTPException(404)
             
-    resized_file_path = FilePath(f"{PATH_AVATARS}/{size}/{name}") # if requests resized
+    resized_file_path = FilePath(f"{PATH_AVATARS}/{name[:2]}/{size}/{name}") # if requests resized
     if resized_file_path.is_file():
         return FileResponse(resized_file_path, headers=headers)
         
