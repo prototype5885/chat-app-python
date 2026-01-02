@@ -609,9 +609,23 @@ async def delete_message(message_id: UlidStr, db: Database, user_id: AuthUser):
     await sio.emit("delete_message", msg.id, room_path("channel", msg.channel_id))
 
 @v1.get("/channel/{channel_id}/messages", response_model=list[MessageResponse])
-async def get_messages(channel_id: str, db: Database, user_id: HasChannelAccess):
-    results = db.execute(select(Message, User.display_name, User.picture).join(User)
-                      .where(Message.channel_id == channel_id).order_by(desc(Message.id)).limit(50)).all()
+async def get_messages(channel_id: str, db: Database, user_id: HasChannelAccess,
+    message_id: str | None = None, direction: Literal["before", "after", None] = None, 
+    count: Literal["50", "75", "100"] = "50"
+):
+    query = select(Message, User.display_name, User.picture).join(User).where(Message.channel_id == channel_id)
+    
+    if message_id:
+        if direction == "before":
+            query = query.where(Message.id < message_id).order_by(Message.id.desc()) # if scrolling up in chat
+        elif direction == "after":
+            query = query.where(Message.id > message_id).order_by(Message.id.asc()) # if scrolling down in chat
+        else:
+            raise HTTPException(400, "Parameter 'direction' is missing")
+    else: 
+        query = query.order_by(Message.id.desc()) # default if just requesting latest messages
+
+    results = db.execute(query.limit(int(count))).all()
     return [MessageResponse(**message.to_dict(), display_name=display_name, picture=picture) 
         for message, display_name, picture in results]
 
