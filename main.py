@@ -610,8 +610,7 @@ async def delete_message(message_id: UlidStr, db: Database, user_id: AuthUser):
 
 @v1.get("/channel/{channel_id}/messages", response_model=list[MessageResponse])
 async def get_messages(channel_id: str, db: Database, user_id: HasChannelAccess,
-    message_id: str | None = None, direction: Literal["before", "after", None] = None, 
-    count: Literal["50", "75", "100"] = "50"
+    message_id: str | None = None, direction: Literal["before", "after", None] = None
 ):
     query = select(Message, User.display_name, User.picture).join(User).where(Message.channel_id == channel_id)
     
@@ -625,7 +624,7 @@ async def get_messages(channel_id: str, db: Database, user_id: HasChannelAccess,
     else: 
         query = query.order_by(Message.id.desc()) # default if just requesting latest messages
 
-    results = db.execute(query.limit(int(count))).all()
+    results = db.execute(query.limit(100)).all()
     return [MessageResponse(**message.to_dict(), display_name=display_name, picture=picture) 
         for message, display_name, picture in results]
 
