@@ -371,21 +371,24 @@ def get_session():
         yield session
 Database = Annotated[Session, Depends(get_session)]
 
-def auth_user(db: Database, token: str = Depends(APIKeyCookie(name="token"))):
+def auth_user(db: Database, token: str | None = Depends(APIKeyCookie(name="token", auto_error=False))):
+    redirect_headers = {"Location": "/login.html"}
+    if not token:
+        raise HTTPException(303, headers=redirect_headers)
     try:
         jwt_payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
     except:
-        raise HTTPException(401, "Error decoding jwt")
+        raise HTTPException(303, "Error decoding jwt", headers=redirect_headers)
     
     user_id = jwt_payload.get("user_id")
     if not isinstance(user_id, str):
-        raise HTTPException(401, "Error getting user_id from jwt")
+        raise HTTPException(303, "Error getting user_id from jwt", headers=redirect_headers)
 
     banned = db.scalar(select(User.banned).where(User.id == user_id))
     if banned is None:
-        raise HTTPException(401, "User id from jwt doesn't exist in database")
+        raise HTTPException(303, "User id from jwt doesn't exist in database", headers=redirect_headers)
     if banned is True:
-        raise HTTPException(401, "User is banned")
+        raise HTTPException(303, "User is banned", headers=redirect_headers)
 
     return user_id
 AuthUser = Annotated[str, Depends(auth_user)]
