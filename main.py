@@ -10,10 +10,10 @@ from typing import Annotated, Any, Dict, List, Literal, Optional
 from ulid import ULID
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Response, UploadFile, Path
 from fastapi.security import APIKeyCookie
-from sqlalchemy import CHAR, Engine, ForeignKey, String, create_engine, desc, event, exists, func, or_, select, text, union, update
+from sqlalchemy import CHAR, Engine, ForeignKey, String, create_engine, event, exists, func, or_, select, text, union, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
-from pydantic import BaseModel, EmailStr, Field, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints, model_validator
 from argon2 import PasswordHasher, exceptions
 from socketio import AsyncServer, ASGIApp
 from PIL import Image
@@ -201,14 +201,14 @@ class MessageEditRequest(BaseModel):
     message: MessageStr
 
 class MessageEditResponse(BaseModel):
-    class Config: from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
     id: str
     message: MessageStr
     attachments: Optional[str] = None
     edited: Optional[str] = None
 
 class MessageResponse(BaseModel):
-    class Config: from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
     id: str
     sender_id: str
     channel_id: str
@@ -697,3 +697,7 @@ async def serve_avatars(user_id: AuthUser, name: PictureName, size: Optional[Lit
         if not resized_file_path.is_file():
             await generate_resized_picture(original_file_path, int(size))
     return FileResponse(resized_file_path, headers=headers)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)
