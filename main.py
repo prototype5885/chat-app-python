@@ -13,7 +13,7 @@ from fastapi.security import APIKeyCookie
 from sqlalchemy import CHAR, Engine, ForeignKey, String, create_engine, event, exists, func, or_, select, text, union, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, StringConstraints, model_validator
 from argon2 import PasswordHasher, exceptions
 from socketio import AsyncServer, ASGIApp
 from PIL import Image
@@ -24,6 +24,7 @@ import aiofiles
 import jwt
 import secrets
 import asyncio
+import bleach
 
 # Constants
 load_dotenv()
@@ -127,6 +128,13 @@ class Server_Member(Base):
 # Types:
 RoomType = Literal["server", "channel"]
 
+# Pydantic helpers:
+def clean_text_message(v: str) -> str:
+    safe_text = bleach.clean(v, protocols=['http', 'https']).strip()
+    if safe_text == "":
+        raise ValueError("Invalid text")
+    return safe_text
+
 # Pydantic types:
 UlidStr = Annotated[str, StringConstraints(pattern=r"^[0-7][0-9A-HJKMNP-TV-Z]{25}$")]
 UsernameStr = Annotated[str, Field(**USERNAME_LEN.kwargs())]
@@ -134,7 +142,7 @@ PasswordStr = Annotated[str, Field(**PASSWORD_LEN.kwargs())]
 DisplayNameStr = Annotated[str, Field(**DISPLAY_NAME_LEN.kwargs())]
 ServerNameStr = Annotated[str, Field(**SERVER_NAME_LEN.kwargs())]
 ChannelNameStr = Annotated[str, Field(**CHANNEL_NAME_LEN.kwargs())]
-MessageStr = Annotated[str, Field(**MESSAGE_LEN.kwargs())]
+MessageStr = Annotated[str, Field(**MESSAGE_LEN.kwargs()), AfterValidator(clean_text_message)]
 PictureName = Annotated[str, Path(pattern=r"^[a-f0-9]{64}\.webp$")]
 
 # Pydantic models:
