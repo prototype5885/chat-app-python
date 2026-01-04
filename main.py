@@ -674,10 +674,6 @@ async def upload_attachment(attachment: UploadFile, user_id: AuthUser):
 
 app.include_router(v1)
 
-# Svelte file handlers
-if os.path.exists("./dist"): # serve svelte frontend from dist folder, if it's there
-    app.mount("/", StaticFiles(directory="dist", html=True))
-
 # Public file handlers
 serve_avatars_lock = asyncio.Lock()
 @app.get("/avatars/{name}", response_class=FileResponse)
@@ -700,6 +696,10 @@ async def serve_avatars(user_id: AuthUser, name: PictureName, size: Optional[Lit
         if not resized_file_path.is_file():
             await generate_resized_picture(original_file_path, int(size))
     return FileResponse(resized_file_path, headers=headers)
+
+# Svelte file handlers
+if os.path.exists("./dist"): # serve svelte frontend from dist folder, if it's there
+    app.mount("/", StaticFiles(directory="dist", html=True))
 
 if __name__ == "__main__":
     import uvicorn
