@@ -230,6 +230,10 @@ class TypingSchema(BaseModel):
     user_id: str
     display_name: Optional[str] = None
 
+class AvatarChanged(BaseModel):
+    id: str 
+    picture: Optional[str] = None
+
 
 # Helpers
 def room_path(room_type: RoomType, id: str):
@@ -281,6 +285,12 @@ async def generate_resized_picture(path: FilePath, size: int):
     async with aiofiles.open(path, "wb") as f:
         await f.write(bytes)
     return path
+
+async def emit_to_servers(event: str, data: Any, user_id: str, db: Database,):
+    servers = db.scalars(select(Server.id).where(or_(Server.owner_id == user_id, Server.members
+        .any(Server_Member.member_id == user_id)))).all()
+    for server_id in servers:
+        await sio.emit(event, data, room_path("server", server_id))
 
 # Database setup
 sqlite_filename = "database/database.db"
@@ -503,6 +513,9 @@ async def upload_user_avatar(db: Database, user_id: AuthUser, file: UploadFile |
     file_hash = await save_picture(file, PATH_AVATARS, (256, 256), crop_square=True)
     db.execute(update(User).where(User.id == user_id).values(picture=file_hash))
     db.commit()
+
+    data = AvatarChanged(id=user_id, picture=file_hash).model_dump()
+    await emit_to_servers("user_avatar_changed", data, user_id, db)
 
 @v1.post("/server", response_model=ServerSchema)
 async def create_server(req: ServerCreateRequest, db: Database, user_id: AuthUser):
