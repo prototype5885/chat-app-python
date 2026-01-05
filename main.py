@@ -503,7 +503,7 @@ async def update_user_info(req: Annotated[UserEditRequest, Form()], db: Database
     db.execute(update(User).where(User.id == user_id).values(values))
     db.commit()
 
-@v1.post("/user/upload/avatar", status_code=202, response_class=Response)
+@v1.post("/user/upload/avatar", response_class=PlainTextResponse)
 async def upload_user_avatar(db: Database, user_id: AuthUser, file: UploadFile | None = None):
     file_hash = await save_picture(file, PATH_AVATARS, (256, 256), crop_square=True)
     db.execute(update(User).where(User.id == user_id).values(picture=file_hash))
@@ -511,6 +511,7 @@ async def upload_user_avatar(db: Database, user_id: AuthUser, file: UploadFile |
 
     data = AvatarChanged(id=user_id, picture=file_hash).model_dump()
     await emit_to_servers("user_avatar_changed", data, user_id, db)
+    return file_hash
 
 @v1.post("/server", response_model=ServerSchema)
 async def create_server(req: ServerCreateRequest, db: Database, user_id: AuthUser):
@@ -534,11 +535,12 @@ async def update_server_info(server_id: str, req: Annotated[ServerEditRequest, F
     db.execute(update(Server).where(Server.id == server_id, Server.owner_id ==  user_id).values(values))
     db.commit()
 
-@v1.post("/server/{server_id}/upload/avatar", response_class=Response)
+@v1.post("/server/{server_id}/upload/avatar", response_class=PlainTextResponse)
 async def upload_server_avatar(server_id: str, db: Database, user_id: IsServerOwner, file: UploadFile | None = None):
     file_hash = await save_picture(file, PATH_AVATARS, (256, 256), crop_square=True) 
     db.execute(update(Server).where(Server.id == server_id, Server.owner_id == user_id).values(picture=file_hash))
     db.commit()
+    return file_hash
 
 @v1.get("/servers", response_model=list[ServerSchema])
 async def get_servers(db: Database, user_id: AuthUser):
