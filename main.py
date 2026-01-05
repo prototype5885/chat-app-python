@@ -162,20 +162,15 @@ class UserLoginRequest(BaseModel):
     email: EmailStr
     password: PasswordStr
 
-class UserInfoResponse(BaseModel):
+class UserSchema(BaseModel):
+    id: str
     username: UsernameStr
-    display_name: DisplayNameStr
-    picture: Optional[str]
-    custom_status: Optional[str]
-
-class UserEditRequest(BaseModel):
-    display_name: Optional[DisplayNameStr] = None
-
-class UserMemberResponse(BaseModel):
-    user_id: str
     display_name: DisplayNameStr
     picture: Optional[str] = None
     custom_status: Optional[str] = None
+
+class UserEditRequest(BaseModel):
+    display_name: Optional[DisplayNameStr] = None
 
 class ServerSchema(BaseModel):
     id: str
@@ -497,9 +492,9 @@ async def test():
 async def get_user_id(user_id: AuthUser):
     return user_id
 
-@v1.get("/user", response_model=UserInfoResponse)
+@v1.get("/user", response_model=UserSchema)
 async def get_user_info(db: Database, user_id: AuthUser):
-    return db.execute(select(User.username, User.display_name, User.picture, User.custom_status)
+    return db.execute(select(User.id, User.username, User.display_name, User.picture, User.custom_status)
         .where(User.id == user_id)).one()
 
 @v1.patch("/user", response_class=Response)
@@ -590,16 +585,16 @@ async def delete_channel(db: Database, channel: IsChannelOwner):
     db.commit()
     await sio.emit("delete_channel", channel.id, room_path("server", channel.server_id))
 
-@v1.get("/server/{server_id}/members", response_model=list[UserMemberResponse])
+@v1.get("/server/{server_id}/members", response_model=list[UserSchema])
 async def get_members(server_id: str, db: Database, _: HasServerAccess):
-    owner_stmt = (select(User.id, User.display_name, User.picture, User.custom_status).join(Server, Server.owner_id == User.id)
-                  .where(Server.id == server_id))
-    member_stmt = (select(User.id, User.display_name, User.picture, User.custom_status).join(Server_Member, Server_Member.member_id == User.id)
-                   .where(Server_Member.server_id == server_id))
-    rows = db.execute(union(owner_stmt, member_stmt)).all()
+    select_stmt = select(User.id, User.username, User.display_name, User.picture, User.custom_status)
+    
+    owner_stmt = (select_stmt.join(Server, Server.owner_id == User.id)
+        .where(Server.id == server_id))
+    member_stmt = (select_stmt.join(Server_Member, Server_Member.member_id == User.id)
+        .where(Server_Member.server_id == server_id))
 
-    return [UserMemberResponse(user_id=user_id, display_name=display_name, picture=picture, custom_status=custom_status) 
-        for user_id, display_name, picture, custom_status in rows]
+    return db.execute(union(owner_stmt, member_stmt)).all()
 
 @v1.post("/channel/{channel_id}/message", status_code=202, response_class=Response)
 async def create_message(channel_id: str, req: MessageCreateRequest, db: Database, user_id: HasChannelAccess):
