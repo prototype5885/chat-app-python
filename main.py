@@ -496,8 +496,11 @@ async def update_user_info(req: Annotated[UserEditRequest, Form()], db: Database
     db.commit()
 
 @v1.post("/user/upload/avatar", status_code=202, response_class=Response)
-async def upload_user_avatar(avatar: UploadFile, db: Database, user_id: AuthUser):
-    file_hash = await save_picture(await avatar.read(), PATH_AVATARS, (256, 256), crop_square=True)
+async def upload_user_avatar(db: Database, user_id: AuthUser, avatar: UploadFile | None = None):
+    if avatar: 
+        file_hash = await save_picture(await avatar.read(), PATH_AVATARS, (256, 256), crop_square=True)
+    else: 
+        file_hash = None
     db.execute(update(User).where(User.id == user_id).values(picture=file_hash).returning(User.id)).scalar_one()
     db.commit()
 
@@ -524,8 +527,11 @@ async def update_server_info(server_id: str, req: Annotated[ServerEditRequest, F
     db.commit()
 
 @v1.post("/server/{server_id}/upload/avatar", response_class=Response)
-async def upload_server_avatar(avatar: UploadFile, server_id: str, db: Database, user_id: IsServerOwner):
-    file_hash = await save_picture(await avatar.read(), PATH_AVATARS, (256, 256), crop_square=True)
+async def upload_server_avatar(server_id: str, db: Database, user_id: IsServerOwner, avatar: UploadFile | None = None):
+    if avatar:
+        file_hash = await save_picture(await avatar.read(), PATH_AVATARS, (256, 256), crop_square=True) 
+    else:
+        file_hash = None
     db.execute(update(Server).where(Server.id == server_id, Server.owner_id == user_id)
         .values(picture=file_hash).returning(Server.id)).scalar_one()
     db.commit()
