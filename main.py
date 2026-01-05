@@ -256,8 +256,11 @@ def process_picture(file: bytes, resolution: tuple[int, int], crop_square: bool)
     except: 
         raise HTTPException(422, "Error processing received picture")
 
-async def save_picture(file: bytes, path: str, resolution: tuple[int, int], crop_square: bool):
-    bytes = process_picture(file, resolution, crop_square) 
+async def save_picture(file: UploadFile | None, path: str, resolution: tuple[int, int], crop_square: bool):
+    if not file:
+        return None
+    avatar = await file.read()
+    bytes = process_picture(avatar, resolution, crop_square) 
    
     file_hash = hashlib.sha256(bytes).hexdigest()
     final_path = FilePath(f"{path}/{file_hash[:2]}/{file_hash}.webp")
@@ -496,12 +499,9 @@ async def update_user_info(req: Annotated[UserEditRequest, Form()], db: Database
     db.commit()
 
 @v1.post("/user/upload/avatar", status_code=202, response_class=Response)
-async def upload_user_avatar(db: Database, user_id: AuthUser, avatar: UploadFile | None = None):
-    if avatar: 
-        file_hash = await save_picture(await avatar.read(), PATH_AVATARS, (256, 256), crop_square=True)
-    else: 
-        file_hash = None
-    db.execute(update(User).where(User.id == user_id).values(picture=file_hash).returning(User.id)).scalar_one()
+async def upload_user_avatar(db: Database, user_id: AuthUser, file: UploadFile | None = None):
+    file_hash = await save_picture(file, PATH_AVATARS, (256, 256), crop_square=True)
+    db.execute(update(User).where(User.id == user_id).values(picture=file_hash))
     db.commit()
 
 @v1.post("/server", response_model=ServerSchema)
@@ -527,13 +527,9 @@ async def update_server_info(server_id: str, req: Annotated[ServerEditRequest, F
     db.commit()
 
 @v1.post("/server/{server_id}/upload/avatar", response_class=Response)
-async def upload_server_avatar(server_id: str, db: Database, user_id: IsServerOwner, avatar: UploadFile | None = None):
-    if avatar:
-        file_hash = await save_picture(await avatar.read(), PATH_AVATARS, (256, 256), crop_square=True) 
-    else:
-        file_hash = None
-    db.execute(update(Server).where(Server.id == server_id, Server.owner_id == user_id)
-        .values(picture=file_hash).returning(Server.id)).scalar_one()
+async def upload_server_avatar(server_id: str, db: Database, user_id: IsServerOwner, file: UploadFile | None = None):
+    file_hash = await save_picture(file, PATH_AVATARS, (256, 256), crop_square=True) 
+    db.execute(update(Server).where(Server.id == server_id, Server.owner_id == user_id).values(picture=file_hash))
     db.commit()
 
 @v1.get("/servers", response_model=list[ServerSchema])
