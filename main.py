@@ -499,11 +499,15 @@ async def get_user_info(db: Database, user_id: AuthUser):
     return db.execute(select(User.id, User.username, User.display_name, User.picture, User.custom_status)
         .where(User.id == user_id)).one()
 
-@v1.patch("/user", response_class=Response)
+@v1.patch("/user", response_model=UserEditResponse)
 async def update_user_info(req: Annotated[UserEditRequest, Form()], db: Database, user_id: AuthUser):
     values = req.model_dump(exclude_unset=True)
     db.execute(update(User).where(User.id == user_id).values(values))
     db.commit()
+
+    data = UserEditResponse(id=user_id, **values).model_dump(exclude_unset=True)
+    await emit_to_servers("user_info", data, user_id, db)
+    return data
 
 @v1.post("/user/upload/avatar", response_class=PlainTextResponse)
 async def upload_user_avatar(db: Database, user_id: AuthUser, file: UploadFile | None = None):
