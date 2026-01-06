@@ -126,7 +126,7 @@ class Server_Member(Base):
 
 
 # Types:
-RoomType = Literal["server", "channel"]
+RoomType = Literal["server_list", "server", "channel"]
 
 # Pydantic helpers:
 def clean_text_message(v: str) -> str:
@@ -191,6 +191,13 @@ class ServerCreateRequest(BaseModel):
 
 class ServerEditRequest(BaseModel):
     name: Optional[ServerNameStr] = None
+
+class ServerEditResponse(BaseModel):
+    id: str
+    name: Optional[ServerNameStr] = None
+    picture: Optional[str] = None
+    banner: Optional[str] = None
+    roles: Optional[str] = None
 
 class ChannelSchema(BaseModel):
     id: str
@@ -347,7 +354,7 @@ async def sio_has_channel_access(sid: str, channel_id: str) -> str | None:
     
 async def subscribe(sid: str, room_type: RoomType, target: str):
     for room in sio.rooms(sid): 
-        if room.startswith(room_type): 
+        if room.startswith(f"{room_type}:"): 
             await sio.leave_room(sid, room)
             # print(f"sid '{sid}' unsubscribed from: '{room}'")
             break
@@ -355,6 +362,12 @@ async def subscribe(sid: str, room_type: RoomType, target: str):
     room = room_path(room_type, target)
     await sio.enter_room(sid, room)
     # print(f"sid '{sid}' subscribed to '{room}'")
+
+async def get_session_id(sid: str):
+    sio_session = await sio.get_session(sid)
+    user_id = sio_session.get("user_id")
+    assert type(user_id) == str
+    return user_id
 
 # Socket.IO events
 @sio.event
@@ -371,6 +384,18 @@ async def connect(sid: str, env):
 # @sio.event
 # async def disconnect(sid: str, reason):
     # print(f"Sid '{sid}' disconnected from Socket.IO, reason: '{reason}'")
+
+@sio.event
+async def subscribe_to_server_list(sid: str):
+    user_id = await get_session_id(sid)
+    with Session(engine) as db:
+        server_ids = db.scalars(select(Server.id)
+            .where(or_(Server.owner_id == user_id, Server.members.any(Server_Member.member_id == user_id)))).all()
+        
+        for server_id in server_ids:
+            room = room_path("server_list", server_id)
+            await sio.enter_room(sid, room)
+        return server_ids
 
 @sio.event
 async def subscribe_to_channel_list(sid: str, server_id: str):
@@ -535,17 +560,24 @@ async def get_server_info(server_id: UlidStr, db: Database, user_id: AuthUser):
         raise HTTPException(401, f"You don't own any server with ID '{server_id}'")
     return server
 
-@v1.patch("/server/{server_id}", response_class=Response)
+@v1.patch("/server/{server_id}", response_model=ServerEditResponse)
 async def update_server_info(server_id: str, req: Annotated[ServerEditRequest, Form()], db: Database, user_id: IsServerOwner):
     values = req.model_dump(exclude_unset=True)
     db.execute(update(Server).where(Server.id == server_id, Server.owner_id ==  user_id).values(values))
     db.commit()
+
+    data = ServerEditResponse(id=server_id, **values).model_dump(exclude_unset=True)
+    await sio.emit("server_info", data, room_path("server_list", server_id))
+    return data
 
 @v1.post("/server/{server_id}/upload/avatar", response_class=PlainTextResponse)
 async def upload_server_avatar(server_id: str, db: Database, user_id: IsServerOwner, file: UploadFile | None = None):
     file_hash = await save_picture(file, PATH_AVATARS, (256, 256), crop_square=True) 
     db.execute(update(Server).where(Server.id == server_id, Server.owner_id == user_id).values(picture=file_hash))
     db.commit()
+
+    data = ServerEditResponse(id=server_id, picture=file_hash).model_dump(exclude_unset=True)
+    await sio.emit("server_info", data, room_path("server_list", server_id))
     return file_hash
 
 @v1.get("/servers", response_model=list[ServerSchema])
