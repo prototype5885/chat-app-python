@@ -172,6 +172,12 @@ class UserSchema(BaseModel):
 class UserEditRequest(BaseModel):
     display_name: Optional[DisplayNameStr] = None
 
+class UserEditResponse(BaseModel):
+    id: str
+    display_name: Optional[str] = None
+    picture: Optional[str] = None
+    custom_status: Optional[str] = None
+
 class ServerSchema(BaseModel):
     id: str
     owner_id: str
@@ -224,10 +230,6 @@ class MessageResponse(BaseModel):
 class TypingSchema(BaseModel):
     user_id: str
     display_name: Optional[str] = None
-
-class AvatarChanged(BaseModel):
-    id: str 
-    picture: Optional[str] = None
 
 
 # Helpers
@@ -509,8 +511,8 @@ async def upload_user_avatar(db: Database, user_id: AuthUser, file: UploadFile |
     db.execute(update(User).where(User.id == user_id).values(picture=file_hash))
     db.commit()
 
-    data = AvatarChanged(id=user_id, picture=file_hash).model_dump()
-    await emit_to_servers("user_avatar_changed", data, user_id, db)
+    data = UserEditResponse(id=user_id, picture=file_hash).model_dump()
+    await emit_to_servers("user_info", data, user_id, db)
     return file_hash
 
 @v1.post("/server", response_model=ServerSchema)
