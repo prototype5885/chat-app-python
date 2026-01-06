@@ -511,7 +511,7 @@ async def upload_user_avatar(db: Database, user_id: AuthUser, file: UploadFile |
     db.execute(update(User).where(User.id == user_id).values(picture=file_hash))
     db.commit()
 
-    data = UserEditResponse(id=user_id, picture=file_hash).model_dump()
+    data = UserEditResponse(id=user_id, picture=file_hash).model_dump(exclude_unset=True)
     await emit_to_servers("user_info", data, user_id, db)
     return file_hash
 
