@@ -192,13 +192,6 @@ class ServerCreateRequest(BaseModel):
 class ServerEditRequest(BaseModel):
     name: Optional[ServerNameStr] = None
 
-class ServerEditResponse(BaseModel):
-    id: str
-    name: Optional[ServerNameStr] = None
-    picture: Optional[str] = None
-    banner: Optional[str] = None
-    roles: Optional[str] = None
-
 class ChannelSchema(BaseModel):
     id: str
     server_id: str
@@ -560,24 +553,29 @@ async def get_server_info(server_id: UlidStr, db: Database, user_id: AuthUser):
         raise HTTPException(401, f"You don't own any server with ID '{server_id}'")
     return server
 
-@v1.patch("/server/{server_id}", response_model=ServerEditResponse)
+@v1.patch("/server/{server_id}", response_model=ServerSchema)
 async def update_server_info(server_id: str, req: Annotated[ServerEditRequest, Form()], db: Database, user_id: IsServerOwner):
     values = req.model_dump(exclude_unset=True)
-    db.execute(update(Server).where(Server.id == server_id, Server.owner_id ==  user_id).values(values))
+    if not values:
+        raise HTTPException(400, "No fields were provided")
+
+    stmt = update(Server).where(Server.id == server_id, Server.owner_id == user_id).values(values).returning(Server)
+    server = db.execute(stmt).scalar_one()
     db.commit()
 
-    data = ServerEditResponse(id=server_id, **values).model_dump(exclude_unset=True)
-    await sio.emit("server_info", data, room_path("server_list", server_id))
-    return data
+    await sio.emit("server_info", server.to_dict(), room_path("server_list", server_id))
+    return server
 
-@v1.post("/server/{server_id}/upload/avatar", response_class=PlainTextResponse)
+@v1.post("/server/{server_id}/upload/avatar", response_model=ServerSchema)
 async def upload_server_avatar(server_id: str, db: Database, user_id: IsServerOwner, file: UploadFile | None = None):
-    file_hash = await save_picture(file, PATH_AVATARS, (256, 256), crop_square=True) 
-    db.execute(update(Server).where(Server.id == server_id, Server.owner_id == user_id).values(picture=file_hash))
+    file_hash = await save_picture(file, PATH_AVATARS, (256, 256), crop_square=True)
+    values = {"picture": file_hash}
+
+    stmt = update(Server).where(Server.id == server_id, Server.owner_id == user_id).values(values).returning(Server)
+    server = db.execute(stmt).scalar_one()
     db.commit()
 
-    data = ServerEditResponse(id=server_id, picture=file_hash).model_dump(exclude_unset=True)
-    await sio.emit("server_info", data, room_path("server_list", server_id))
+    await sio.emit("server_info", server.to_dict(), room_path("server_list", server_id))
     return file_hash
 
 @v1.get("/servers", response_model=list[ServerSchema])
