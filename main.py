@@ -566,7 +566,7 @@ async def update_server_info(server_id: str, req: Annotated[ServerEditRequest, F
     await sio.emit("server_info", server.to_dict(), room_path("server_list", server_id))
     return server
 
-@v1.post("/server/{server_id}/upload/avatar", response_model=ServerSchema)
+@v1.post("/server/{server_id}/upload/avatar", response_class=PlainTextResponse)
 async def upload_server_avatar(server_id: str, db: Database, user_id: IsServerOwner, file: UploadFile | None = None):
     file_hash = await save_picture(file, PATH_AVATARS, (256, 256), crop_square=True)
     values = {"picture": file_hash}
