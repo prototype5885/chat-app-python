@@ -502,6 +502,14 @@ class ConnectionManager:
         for server_id in servers:
             await self.emit(event, data, room_path("server", server_id))
 
+    async def emit_to_user(self, event: str, data: Any, user_id: str):
+        for conn, client in self.clients.items():
+            if client.user_id == user_id:
+                formatted_data = json.dumps(data) if isinstance(data, dict) else str(data)
+                msg = f"{event} {formatted_data}"
+                await conn.send_text(msg)
+                return
+
 ws = ConnectionManager()
 
 # WebSocket handler
@@ -584,6 +592,7 @@ async def update_user_info(req: Annotated[UserEditRequest, Form()], db: Database
     db.commit()
 
     data = UserEditResponse(id=user_id, **values).model_dump(exclude_unset=True)
+    await ws.emit_to_user("self_user_info", data, user_id)
     await ws.emit_to_servers("user_info", data, user_id, db)
     return data
 
@@ -594,6 +603,7 @@ async def upload_user_avatar(db: Database, user_id: AuthUser, file: UploadFile |
     db.commit()
 
     data = UserEditResponse(id=user_id, picture=file_hash).model_dump(exclude_unset=True)
+    await ws.emit_to_user("self_user_info", data, user_id)
     await ws.emit_to_servers("user_info", data, user_id, db)
     return file_hash
 
