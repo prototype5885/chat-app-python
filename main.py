@@ -1,4 +1,3 @@
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path as FilePath
@@ -12,7 +11,7 @@ from fastapi import APIRouter, FastAPI,  Response, UploadFile
 from fastapi.param_functions import Depends, Form, Path
 from fastapi.exceptions import HTTPException, WebSocketException
 from fastapi.security import APIKeyCookie
-from fastapi.websockets import WebSocket, WebSocketDisconnect
+from fastapi.websockets import WebSocket, WebSocketState
 from sqlalchemy import CHAR, Engine, ForeignKey, String, create_engine, event, func
 from sqlalchemy.sql import exists, or_, select, text, union, update
 from sqlalchemy.exc import IntegrityError
@@ -238,9 +237,6 @@ class TypingSchema(BaseModel):
 
 
 # Helpers
-def room_path(room_type: RoomType, id: str):
-    return f"{room_type}:{id}"
-
 def get_display_name(db: Database, user_id: str): # TODO not optimal solution, extra query
     return db.execute(select(User.display_name).where(User.id == user_id)).scalar_one()
 
@@ -386,129 +382,102 @@ HasChannelAccess = Annotated[str, Depends(has_channel_access)]
 class WebSocketClient:
     def __init__(self, user_id: str):
         self.user_id = user_id
+        self.server_id: str | None = None
+        self.channel_id: str | None = None
 
 class ConnectionManager:
     def __init__(self):
         self.clients: dict[WebSocket, WebSocketClient] = {}
 
-        self.rooms: defaultdict[str, set[WebSocket]] = defaultdict(set)
-        self.rooms_inverse: defaultdict[WebSocket, set[str]] = defaultdict(set)
-
     async def connect(self, websocket: WebSocket, user_id: str):
         await websocket.accept()
         self.clients[websocket] = WebSocketClient(user_id=user_id)
 
-    def remove(self, websocket: WebSocket):
-        if websocket in self.rooms_inverse: # delete from inverse client list
-            for room_name in self.rooms_inverse[websocket]:
-                if room_name in self.rooms:
-                    self.rooms[room_name].discard(websocket)
-                    if not self.rooms[room_name]: # delete if empty
-                        del self.rooms[room_name]
-            del self.rooms_inverse[websocket]
-
-        if websocket in self.clients: # delete from client list
+    async def disconnect(self, websocket: WebSocket):
+        if websocket in self.clients:
+            if websocket.client_state != WebSocketState.DISCONNECTED:
+                try: await websocket.close()
+                except: pass
             del self.clients[websocket]
 
-    async def emit(self, event: str, data: Any, room: str):
-        if room not in self.rooms:
+    async def emit(self, event: str, data: Any, room_type: RoomType, id: str):
+        formatted_data = json.dumps(data) if isinstance(data, dict) else str(data)
+        message = f"{event} {formatted_data}"
+        tasks = []
+
+        match room_type:
+            case "server_list":
+                with Session(engine) as db:
+                    select_stmt = select(User.id)
+                    owner_stmt = (select_stmt.join(Server, Server.owner_id == User.id).where(Server.id == id))
+                    member_stmt = (select_stmt.join(Server_Member, Server_Member.member_id == User.id)
+                        .where(Server_Member.server_id == id))
+                    user_ids = db.scalars(union(owner_stmt, member_stmt)).all()
+                    
+                for ws_conn, ws_info in list(self.clients.items()):
+                    if ws_info.user_id in user_ids:
+                        tasks.append(ws_conn.send_text(message))
+
+            case "server":
+                for ws_conn, ws_info in list(self.clients.items()):
+                    if ws_info.server_id == id:
+                        tasks.append(ws_conn.send_text(message))
+
+            case "channel":
+                for ws_conn, ws_info in list(self.clients.items()):
+                    if ws_info.channel_id == id:
+                        tasks.append(ws_conn.send_text(message))
+
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def handle_incoming_message(self, message: str, websocket: WebSocket):
+        if websocket not in self.clients:
             return
 
-        formatted_data = json.dumps(data) if isinstance(data, dict) else str(data)
-        msg = f"{event} {formatted_data}"
-
-        tasks = [client.send_text(msg) for client in self.rooms[room]]
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    def process_message(self, raw_msg: str, websocket: WebSocket):
         user_id = self.clients[websocket].user_id
-        event, data = raw_msg.split(" ", maxsplit=1)
+        event, data = message.split(" ", maxsplit=1)
+
+        def subscribe(room_type: RoomType, id: str):  
+            match room_type:
+                case "channel": self.clients[websocket].channel_id = id
+                case "server": self.clients[websocket].server_id = id
+
+        async def reply_exception(error: Exception):
+            await websocket.send_text(f"exception error on event: '{event}', error: '{error}'")
         
         match event:
             case "subscribe_to_message_list":
                 with Session(engine) as session:
                     channel_id = data
-                    try: has_channel_access(session, channel_id, user_id)
-                    except Exception as e: return str(e)
-                self.unsub_then_subscribe("channel", channel_id, websocket)
+                    try: 
+                        has_channel_access(session, channel_id, user_id)
+                        subscribe("channel", channel_id)
+                    except Exception as e: 
+                        await reply_exception(e)
 
             case "subscribe_to_channel_list":
                 with Session(engine) as session:
                     server_id = data
-                    try: has_server_access(session, server_id, user_id)
-                    except Exception as e: return str(e)
-                self.unsub_then_subscribe("server", server_id, websocket)
-
-            case "subscribe_to_server":
-                with Session(engine) as session:
-                    server_id = data
-                    try: has_server_access(session, server_id, user_id)
-                    except Exception as e: return str(e)
-                room = room_path("server_list", server_id)
-                self.subscribe(room, websocket)
-
-            case "subscribe_to_server_list":
-                with Session(engine) as db:
-                    server_ids = db.scalars(select(Server.id)
-                        .where(or_(Server.owner_id == user_id, Server.members
-                        .any(Server_Member.member_id == user_id)))).all()
-                for server_id in server_ids:
-                    room = room_path("server_list", server_id)
-                    self.subscribe(room, websocket)
-                # return server_ids
-
-            case _: 
-                pass
-
-    def get_user_id(self, websocket: WebSocket):
-        if websocket in self.clients:
-            return self.clients[websocket].user_id
-        else:
-            raise Exception("Couldn't get user id from websocket connection, connection not found")
-
-    def subscribe(self, room: str, websocket: WebSocket):
-        # print(f"Subscribing to {room}")
-        if websocket not in self.clients:
-            return
-
-        self.rooms[room].add(websocket)
-        self.rooms_inverse[websocket].add(room)
-
-    def unsubscribe(self, room_type: RoomType, websocket: WebSocket):
-        # print(f"Unsubscribing from {room_type}")
-        if websocket not in self.rooms_inverse:
-            return
-
-        rooms_to_remove = [
-            r for r in self.rooms_inverse[websocket] 
-            if r.startswith(f"{room_type}:")
-        ]
-
-        for room in rooms_to_remove:
-            self.rooms[room].discard(websocket)
-            if not self.rooms[room]: # delete if empty
-                del self.rooms[room]
-            self.rooms_inverse[websocket].remove(room)
-
-    def unsub_then_subscribe(self, room_type: RoomType, target: str, websocket: WebSocket):
-        self.unsubscribe(room_type, websocket)
-        room = room_path(room_type, target)
-        self.subscribe(room, websocket)
-        
-    # will send to those who have visual on affected change
+                    try: 
+                        has_server_access(session, server_id, user_id)
+                        subscribe("server", server_id)
+                    except Exception as e: 
+                        await reply_exception(e)
+                
+    # will send to those who have visual on affected change (like: user changed name)
     async def emit_to_servers(self, event: str, data: Any, user_id: str, db: Database):
         servers = db.scalars(select(Server.id).where(or_(Server.owner_id == user_id, Server.members
             .any(Server_Member.member_id == user_id)))).all()
         for server_id in servers:
-            await self.emit(event, data, room_path("server", server_id))
+            await self.emit(event, data, "server", server_id)
 
     async def emit_to_user(self, event: str, data: Any, user_id: str):
-        for conn, client in self.clients.items():
-            if client.user_id == user_id:
+        for ws_conn, ws_info in self.clients.items():
+            if ws_info.user_id == user_id:
                 formatted_data = json.dumps(data) if isinstance(data, dict) else str(data)
-                msg = f"{event} {formatted_data}"
-                await conn.send_text(msg)
-                return
+                message = f"{event} {formatted_data}"
+                await ws_conn.send_text(message)
 
 ws = ConnectionManager()
 
@@ -525,9 +494,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
         while True:
             raw_msg = await websocket.receive_text()
-            ws.process_message(raw_msg, websocket)
-    except WebSocketDisconnect:
-        ws.remove(websocket)
+            await ws.handle_incoming_message(raw_msg, websocket)
+    finally:
+        await ws.disconnect(websocket)
         
 
 # FastAPI paths
@@ -633,7 +602,7 @@ async def update_server_info(server_id: str, req: Annotated[ServerEditRequest, F
     server = db.execute(stmt).scalar_one()
     db.commit()
 
-    await ws.emit("server_info", server.to_dict(), room_path("server_list", server_id))
+    await ws.emit("server_info", server.to_dict(), "server_list", server_id)
     return server
 
 @v1.post("/server/{server_id}/upload/avatar", response_class=PlainTextResponse)
@@ -645,7 +614,7 @@ async def upload_server_avatar(server_id: str, db: Database, user_id: IsServerOw
     server = db.execute(stmt).scalar_one()
     db.commit()
 
-    await ws.emit("server_info", server.to_dict(), room_path("server_list", server_id))
+    await ws.emit("server_info", server.to_dict(), "server_list", server_id)
     return file_hash
 
 @v1.get("/servers", response_model=list[ServerSchema])
@@ -658,11 +627,13 @@ async def delete_server(server_id: UlidStr, db: Database, user_id: AuthUser):
     server = db.scalar(select(Server).where(Server.id == server_id, Server.owner_id == user_id))
     if not server:
         raise HTTPException(401, f"You don't own any server with ID '{server_id}'")
+
+    # need to emit event before deletion as it would be no longer possible to get affected clients
+    # might not be optimal
+    await ws.emit("delete_server", server_id, "server_list", server_id)
     
     db.delete(server)
     db.commit()
-    
-    await ws.emit("delete_server", server_id, room_path("server_list", server_id))
 
 @v1.post("/server/{server_id}/channel", status_code=202, response_class=Response)
 async def create_channel(server_id: str, req: ChannelCreateRequest, db: Database, user_id: IsServerOwner):
@@ -670,7 +641,7 @@ async def create_channel(server_id: str, req: ChannelCreateRequest, db: Database
     db.add(channel)
     db.commit()
 
-    await ws.emit("create_channel", channel.to_dict(), room_path("server", server_id))
+    await ws.emit("create_channel", channel.to_dict(), "server", server_id)
 
 @v1.get("/channel/{channel_id}", response_model=ChannelSchema)
 async def get_channel_info(channel: IsChannelOwner):
@@ -681,7 +652,7 @@ async def update_channel_info(req: Annotated[ChannelEditRequest, Form()], db: Da
     values = req.model_dump(exclude_unset=True)
     db.execute(update(Channel).where(Channel.id == channel.id).values(values).returning(Channel.id)).one()
     db.commit()
-    await ws.emit("modify_channel", channel.to_dict(), room_path("server", channel.server_id))
+    await ws.emit("modify_channel", channel.to_dict(), "server", channel.server_id)
 
 @v1.get("/server/{server_id}/channels", response_model=list[ChannelSchema])
 async def get_channels(server_id: str, db: Database, user_id: HasServerAccess):
@@ -691,7 +662,7 @@ async def get_channels(server_id: str, db: Database, user_id: HasServerAccess):
 async def delete_channel(db: Database, channel: IsChannelOwner):
     db.delete(channel)
     db.commit()
-    await ws.emit("delete_channel", channel.id, room_path("server", channel.server_id))
+    await ws.emit("delete_channel", channel.id, "server", channel.server_id)
 
 @v1.get("/server/{server_id}/members", response_model=list[UserSchema])
 async def get_members(server_id: str, db: Database, _: HasServerAccess):
@@ -713,7 +684,7 @@ async def create_message(channel_id: str, req: MessageCreateRequest, db: Databas
     display_name, picture = db.execute(select(User.display_name, User.picture).where(User.id == user_id)).one()
 
     data = MessageResponse(**message.to_dict(), display_name=display_name, picture=picture).model_dump()
-    await ws.emit("create_message", data, room_path("channel", channel_id))
+    await ws.emit("create_message", data, "channel", channel_id)
 
 @v1.patch("/message/{message_id}", status_code=202, response_class=Response)
 async def edit_message(message_id: UlidStr, req: MessageEditRequest, db: Database, user_id: AuthUser):
@@ -724,7 +695,7 @@ async def edit_message(message_id: UlidStr, req: MessageEditRequest, db: Databas
     db.commit()
 
     data = MessageEditResponse.model_validate(msg).model_dump()
-    await ws.emit("edit_message", data, room_path("channel", msg.channel_id))
+    await ws.emit("edit_message", data, "channel", msg.channel_id)
 
 @v1.delete("/message/{message_id}", status_code=202, response_class=Response)
 async def delete_message(message_id: UlidStr, db: Database, user_id: AuthUser):
@@ -735,7 +706,7 @@ async def delete_message(message_id: UlidStr, db: Database, user_id: AuthUser):
     db.delete(msg)
     db.commit()
 
-    await ws.emit("delete_message", msg.id, room_path("channel", msg.channel_id))
+    await ws.emit("delete_message", msg.id, "channel", msg.channel_id)
 
 @v1.get("/channel/{channel_id}/messages", response_model=list[MessageResponse])
 async def get_messages(channel_id: str, db: Database, user_id: HasChannelAccess,
@@ -763,7 +734,7 @@ async def typing(db: Database, value: Literal["start", "stop"], channel_id: str,
         data = TypingSchema(user_id=user_id, display_name=get_display_name(db, user_id)).model_dump()
     else:
         data = user_id
-    await ws.emit(f"{value}_typing", data, room_path("channel", channel_id))
+    await ws.emit(f"{value}_typing", data, "channel", channel_id)
 
 upload_attachment_lock = asyncio.Lock()
 @v1.post("/upload/attachment", response_class=Response)
