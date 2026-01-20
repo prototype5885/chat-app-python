@@ -11,7 +11,7 @@ from fastapi import APIRouter, FastAPI,  Response, UploadFile
 from fastapi.param_functions import Depends, Form, Path
 from fastapi.exceptions import HTTPException, WebSocketException
 from fastapi.security import APIKeyCookie
-from fastapi.websockets import WebSocket, WebSocketState
+from fastapi.websockets import WebSocket, WebSocketState, WebSocketDisconnect
 from sqlalchemy import CHAR, Engine, ForeignKey, String, create_engine, event, func
 from sqlalchemy.sql import exists, or_, select, text, union, update
 from sqlalchemy.exc import IntegrityError
@@ -495,6 +495,8 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             raw_msg = await websocket.receive_text()
             await ws.handle_incoming_message(raw_msg, websocket)
+    except WebSocketDisconnect:
+        pass
     finally:
         await ws.disconnect(websocket)
         
