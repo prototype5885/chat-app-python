@@ -128,10 +128,6 @@ class Server_Member(Base):
 
     server: Mapped["Server"] = relationship(back_populates="members")
 
-
-# Types:
-RoomType = Literal["server_list", "server", "channel"]
-
 # Pydantic helpers:
 def clean_text_message(v: str) -> str:
     safe_text = bleach.clean(v, protocols=['http', 'https']).strip()
@@ -232,7 +228,7 @@ class MessageResponse(BaseModel):
     picture: Optional[str] = None
 
 class TypingSchema(BaseModel):
-    user_id: str
+    id: str
     display_name: Optional[str] = None
 
 
@@ -385,7 +381,9 @@ class WebSocketClient:
         self.server_id: str | None = None
         self.channel_id: str | None = None
 
-class ConnectionManager:
+SubscriptionTarget = Literal["server_list", "server", "channel"]
+
+class WebSocketManager:
     def __init__(self):
         self.clients: dict[WebSocket, WebSocketClient] = {}
 
@@ -400,37 +398,6 @@ class ConnectionManager:
                 except: pass
             del self.clients[websocket]
 
-    async def emit(self, event: str, data: Any, room_type: RoomType, id: str):
-        formatted_data = json.dumps(data) if isinstance(data, dict) else str(data)
-        message = f"{event} {formatted_data}"
-        tasks = []
-
-        match room_type:
-            case "server_list":
-                with Session(engine) as db:
-                    select_stmt = select(User.id)
-                    owner_stmt = (select_stmt.join(Server, Server.owner_id == User.id).where(Server.id == id))
-                    member_stmt = (select_stmt.join(Server_Member, Server_Member.member_id == User.id)
-                        .where(Server_Member.server_id == id))
-                    user_ids = db.scalars(union(owner_stmt, member_stmt)).all()
-                    
-                for ws_conn, ws_info in list(self.clients.items()):
-                    if ws_info.user_id in user_ids:
-                        tasks.append(ws_conn.send_text(message))
-
-            case "server":
-                for ws_conn, ws_info in list(self.clients.items()):
-                    if ws_info.server_id == id:
-                        tasks.append(ws_conn.send_text(message))
-
-            case "channel":
-                for ws_conn, ws_info in list(self.clients.items()):
-                    if ws_info.channel_id == id:
-                        tasks.append(ws_conn.send_text(message))
-
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-
     async def handle_incoming_message(self, message: str, websocket: WebSocket):
         if websocket not in self.clients:
             return
@@ -438,8 +405,8 @@ class ConnectionManager:
         user_id = self.clients[websocket].user_id
         event, data = message.split(" ", maxsplit=1)
 
-        def subscribe(room_type: RoomType, id: str):  
-            match room_type:
+        def subscribe(target_subs: SubscriptionTarget, id: str):  
+            match target_subs:
                 case "channel": self.clients[websocket].channel_id = id
                 case "server": self.clients[websocket].server_id = id
 
@@ -464,22 +431,51 @@ class ConnectionManager:
                         subscribe("server", server_id)
                     except Exception as e: 
                         await reply_exception(e)
+    
+    async def emit(self, event: str, data: dict, target_subs: SubscriptionTarget, target_id: str):
+        message = f"{event} {json.dumps(data)}"
+        tasks = []
+
+        match target_subs:
+            case "server_list":
+                with Session(engine) as db:
+                    select_stmt = select(User.id)
+                    owner_stmt = (select_stmt.join(Server, Server.owner_id == User.id).where(Server.id == target_id))
+                    member_stmt = (select_stmt.join(Server_Member, Server_Member.member_id == User.id)
+                        .where(Server_Member.server_id == target_id))
+                    user_ids = db.scalars(union(owner_stmt, member_stmt)).all()
+                    
+                for ws_conn, ws_info in list(self.clients.items()):
+                    if ws_info.user_id in user_ids:
+                        tasks.append(ws_conn.send_text(message))
+
+            case "server":
+                for ws_conn, ws_info in list(self.clients.items()):
+                    if ws_info.server_id == target_id:
+                        tasks.append(ws_conn.send_text(message))
+
+            case "channel":
+                for ws_conn, ws_info in list(self.clients.items()):
+                    if ws_info.channel_id == target_id:
+                        tasks.append(ws_conn.send_text(message))
+
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
                 
     # will send to those who have visual on affected change (like: user changed name)
-    async def emit_to_servers(self, event: str, data: Any, user_id: str, db: Database):
-        servers = db.scalars(select(Server.id).where(or_(Server.owner_id == user_id, Server.members
+    async def emit_to_servers(self, event: str, data: dict, user_id: str, db: Database):
+        server_ids = db.scalars(select(Server.id).where(or_(Server.owner_id == user_id, Server.members
             .any(Server_Member.member_id == user_id)))).all()
-        for server_id in servers:
+        for server_id in server_ids:
             await self.emit(event, data, "server", server_id)
 
-    async def emit_to_user(self, event: str, data: Any, user_id: str):
+    async def emit_to_user(self, event: str, data: dict, user_id: str):
+        message = f"{event} {json.dumps(data)}"
         for ws_conn, ws_info in self.clients.items():
             if ws_info.user_id == user_id:
-                formatted_data = json.dumps(data) if isinstance(data, dict) else str(data)
-                message = f"{event} {formatted_data}"
                 await ws_conn.send_text(message)
 
-ws = ConnectionManager()
+ws = WebSocketManager()
 
 # WebSocket handler
 @app.websocket("/ws")
@@ -632,7 +628,8 @@ async def delete_server(server_id: UlidStr, db: Database, user_id: AuthUser):
 
     # need to emit event before deletion as it would be no longer possible to get affected clients
     # might not be optimal
-    await ws.emit("delete_server", server_id, "server_list", server_id)
+    data = {"id": server_id}
+    await ws.emit("delete_server", data, "server_list", server_id)
     
     db.delete(server)
     db.commit()
@@ -664,7 +661,8 @@ async def get_channels(server_id: str, db: Database, user_id: HasServerAccess):
 async def delete_channel(db: Database, channel: IsChannelOwner):
     db.delete(channel)
     db.commit()
-    await ws.emit("delete_channel", channel.id, "server", channel.server_id)
+    data = {"id": channel.id}
+    await ws.emit("delete_channel", data, "server", channel.server_id)
 
 @v1.get("/server/{server_id}/members", response_model=list[UserSchema])
 async def get_members(server_id: str, db: Database, _: HasServerAccess):
@@ -708,7 +706,8 @@ async def delete_message(message_id: UlidStr, db: Database, user_id: AuthUser):
     db.delete(msg)
     db.commit()
 
-    await ws.emit("delete_message", msg.id, "channel", msg.channel_id)
+    data = {"id": msg.id}
+    await ws.emit("delete_message", data, "channel", msg.channel_id)
 
 @v1.get("/channel/{channel_id}/messages", response_model=list[MessageResponse])
 async def get_messages(channel_id: str, db: Database, user_id: HasChannelAccess,
@@ -733,9 +732,9 @@ async def get_messages(channel_id: str, db: Database, user_id: HasChannelAccess,
 @v1.post("/channel/{channel_id}/typing/{value}", status_code=202, response_class=Response)
 async def typing(db: Database, value: Literal["start", "stop"], channel_id: str, user_id: HasChannelAccess):
     if value == "start":
-        data = TypingSchema(user_id=user_id, display_name=get_display_name(db, user_id)).model_dump()
+        data = TypingSchema(id=user_id, display_name=get_display_name(db, user_id)).model_dump()
     else:
-        data = user_id
+        data = TypingSchema(id=user_id).model_dump(exclude_unset=True)
     await ws.emit(f"{value}_typing", data, "channel", channel_id)
 
 upload_attachment_lock = asyncio.Lock()
