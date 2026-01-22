@@ -227,14 +227,16 @@ class MessageResponse(BaseModel):
     display_name: DisplayNameStr
     picture: Optional[str] = None
 
-class TypingSchema(BaseModel):
-    id: str
-    display_name: Optional[str] = None
-
+# Cache
+display_name_cache: dict[str, str] = {}
 
 # Helpers
-def get_display_name(db: Database, user_id: str): # TODO not optimal solution, extra query
-    return db.execute(select(User.display_name).where(User.id == user_id)).scalar_one()
+def get_display_name(user_id: str):
+    if user_id in display_name_cache:
+        return display_name_cache[user_id]
+    with Session(engine) as db:
+        display_name_cache[user_id] = db.execute(select(User.display_name).where(User.id == user_id)).scalar_one()
+        return display_name_cache[user_id]
 
 def process_picture(file: bytes, resolution: tuple[int, int], crop_square: bool):
     try:
@@ -539,6 +541,9 @@ async def delete_user(db: Database, user_id: AuthUser):
     db.delete(user)
     db.commit()
 
+    if user_id in display_name_cache:
+        del display_name_cache[user_id]
+
 @v1.get("/test", response_class=PlainTextResponse)
 async def test():
     return "Hello world!"
@@ -557,6 +562,9 @@ async def update_user_info(req: Annotated[UserEditRequest, Form()], db: Database
     values = req.model_dump(exclude_unset=True)
     db.execute(update(User).where(User.id == user_id).values(values))
     db.commit()
+
+    if req.display_name:
+        display_name_cache[user_id] = req.display_name
 
     data = UserEditResponse(id=user_id, **values).model_dump(exclude_unset=True)
     await ws.emit_to_user("self_user_info", data, user_id)
@@ -730,11 +738,11 @@ async def get_messages(channel_id: str, db: Database, user_id: HasChannelAccess,
         for message, display_name, picture in results]
 
 @v1.post("/channel/{channel_id}/typing/{value}", status_code=202, response_class=Response)
-async def typing(db: Database, value: Literal["start", "stop"], channel_id: str, user_id: HasChannelAccess):
+async def typing(value: Literal["start", "stop"], channel_id: str, user_id: HasChannelAccess):
     if value == "start":
-        data = TypingSchema(id=user_id, display_name=get_display_name(db, user_id)).model_dump()
+        data = {"id": user_id, "display_name": get_display_name(user_id)}
     else:
-        data = TypingSchema(id=user_id).model_dump(exclude_unset=True)
+        data = {"id": user_id}
     await ws.emit(f"{value}_typing", data, "channel", channel_id)
 
 upload_attachment_lock = asyncio.Lock()
