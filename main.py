@@ -12,7 +12,7 @@ from fastapi.param_functions import Depends, Form, Path
 from fastapi.exceptions import HTTPException, WebSocketException
 from fastapi.security import APIKeyCookie
 from fastapi.websockets import WebSocket, WebSocketState, WebSocketDisconnect
-from sqlalchemy import CHAR, Engine, ForeignKey, String, create_engine, event, func
+from sqlalchemy import CHAR, Engine, ForeignKey, String, create_engine, delete, event, func
 from sqlalchemy.sql import exists, or_, select, text, union, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
@@ -364,18 +364,16 @@ def has_server_access(db: Database, server_id: UlidStr, user_id: AuthUser) -> st
     return user_id
 HasServerAccess = Annotated[str, Depends(has_server_access)]
 
-def is_channel_owner(db: Database, channel_id: UlidStr, user_id: AuthUser) -> Channel:
-    stmt = (
-        select(Channel).join(Server, Channel.server_id == Server.id)
-        .where(Channel.id == channel_id, Server.owner_id == user_id)
-    )
-
-    channel = db.execute(stmt).scalar_one_or_none()
-    if not channel:
+def is_channel_owner(db: Database, channel_id: UlidStr, user_id: AuthUser) -> str:
+    server_id_subquery = select(Channel.server_id).where(Channel.id == channel_id).scalar_subquery()
+    stmt_owner = exists().where(Server.id == server_id_subquery, Server.owner_id == user_id)
+    
+    is_owner = db.scalar(select(stmt_owner))
+    if not is_owner:
         raise HTTPException(401, f"You don't own channel ID '{channel_id}'")
 
-    return channel
-IsChannelOwner = Annotated[Channel, Depends(is_channel_owner)]
+    return user_id
+IsChannelOwner = Annotated[str, Depends(is_channel_owner)]
 
 def has_channel_access(db: Database, channel_id: UlidStr, user_id: AuthUser) -> str:
     server_id_subquery = select(Channel.server_id).where(Channel.id == channel_id).scalar_subquery()
@@ -665,13 +663,14 @@ async def create_channel(server_id: str, req: ChannelCreateRequest, db: Database
     await ws.emit("create_channel", channel.to_dict(), "server", server_id)
 
 @v1.get("/channel/{channel_id}", response_model=ChannelSchema)
-async def get_channel_info(channel: IsChannelOwner):
-    return channel
+async def get_channel_info(db: Database, channel_id: str, user_id: IsChannelOwner):
+    return db.execute(select(Channel).where(Channel.id == channel_id)).scalar_one()
 
 @v1.patch("/channel/{channel_id}", status_code=202, response_class=Response)
-async def update_channel_info(req: Annotated[ChannelEditRequest, Form()], db: Database, channel: IsChannelOwner):
+async def update_channel_info(channel_id: str, req: Annotated[ChannelEditRequest, Form()], db: Database, user_id: IsChannelOwner):
     values = req.model_dump(exclude_unset=True)
-    db.execute(update(Channel).where(Channel.id == channel.id).values(values).returning(Channel.id)).one()
+    stmt = update(Channel).where(Channel.id == channel_id).values(values).returning(Channel)
+    channel = db.execute(stmt).scalar_one()
     db.commit()
     await ws.emit("modify_channel", channel.to_dict(), "server", channel.server_id)
 
@@ -680,11 +679,11 @@ async def get_channels(server_id: str, db: Database, user_id: HasServerAccess):
     return db.scalars(select(Channel).where(Channel.server_id == server_id)).all()
 
 @v1.delete("/channel/{channel_id}", status_code=202, response_class=Response)
-async def delete_channel(db: Database, channel: IsChannelOwner):
-    db.delete(channel)
+async def delete_channel(db: Database, channel_id: str, user_id: IsChannelOwner):
+    server_id = db.execute(delete(Channel).where(Channel.id == channel_id).returning(Channel.server_id)).scalar_one()
     db.commit()
-    data = {"id": channel.id}
-    await ws.emit("delete_channel", data, "server", channel.server_id)
+    data = {"id": channel_id}
+    await ws.emit("delete_channel", data, "server", server_id)
 
 @v1.get("/server/{server_id}/members", response_model=list[UserSchema])
 async def get_members(server_id: str, db: Database, _: HasServerAccess):
