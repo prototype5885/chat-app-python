@@ -321,7 +321,7 @@ def get_session():
         yield session
 Database = Annotated[Session, Depends(get_session)]
 
-def auth_user(db: Database, token: str | None = Depends(APIKeyCookie(name="token", auto_error=False))):
+def auth_user(db: Database, token: str | None = Depends(APIKeyCookie(name="token", auto_error=False))) -> str:
     redirect_headers = {"Location": "/login.html"}
     if not token:
         raise HTTPException(303, headers=redirect_headers)
@@ -343,35 +343,49 @@ def auth_user(db: Database, token: str | None = Depends(APIKeyCookie(name="token
     return user_id
 AuthUser = Annotated[str, Depends(auth_user)]
 
-def is_server_owner(db: Database, server_id: UlidStr, user_id: AuthUser):
-    is_owner = db.scalar(select(exists().where(Server.id == server_id, Server.owner_id == user_id)))
+def is_server_owner(db: Database, server_id: UlidStr, user_id: AuthUser) -> str:
+    stmt_owner = select(exists().where(Server.id == server_id, Server.owner_id == user_id))
+
+    is_owner = db.scalar(stmt_owner)
     if not is_owner:
-        raise HTTPException(401, f"Not owner of server ID '{server_id}', which may not even exist")
+        raise HTTPException(401, f"You don't own server ID '{server_id}'")
+
     return user_id
 IsServerOwner = Annotated[str, Depends(is_server_owner)]
 
-def has_server_access(db: Database, server_id: UlidStr, user_id: AuthUser):
-    is_owner = exists().where(Server.id == server_id, Server.owner_id == user_id)
-    is_member = exists().where(Server_Member.server_id == server_id, Server_Member.member_id == user_id)
-    result = db.scalar(select(is_owner | is_member))
-    if not result:
-        raise HTTPException(401, f"Not member or owner of server ID '{server_id}', which may not even exist")
+def has_server_access(db: Database, server_id: UlidStr, user_id: AuthUser) -> str:
+    stmt_member = exists().where(Server_Member.server_id == server_id, Server_Member.member_id == user_id)
+    stmt_owner = exists().where(Server.id == server_id, Server.owner_id == user_id)
+
+    has_access = db.scalar(select(stmt_member | stmt_owner))
+    if not has_access:
+        raise HTTPException(401, f"You have no access to server ID '{server_id}'")
+
     return user_id
 HasServerAccess = Annotated[str, Depends(has_server_access)]
 
-def is_channel_owner(db: Database, channel_id: UlidStr, user_id: AuthUser):
-    channel = db.scalar(select(Channel).where(Channel.id == channel_id))
+def is_channel_owner(db: Database, channel_id: UlidStr, user_id: AuthUser) -> Channel:
+    stmt = (
+        select(Channel).join(Server, Channel.server_id == Server.id)
+        .where(Channel.id == channel_id, Server.owner_id == user_id)
+    )
+
+    channel = db.execute(stmt).scalar_one_or_none()
     if not channel:
-        raise HTTPException(404, f"Channel ID '{channel_id}' doesn't belong to any server or doesn't exist")
-    is_server_owner(db, channel.server_id, user_id)
+        raise HTTPException(401, f"You don't own channel ID '{channel_id}'")
+
     return channel
 IsChannelOwner = Annotated[Channel, Depends(is_channel_owner)]
 
-def has_channel_access(db: Database, channel_id: UlidStr, user_id: AuthUser):
-    server_id = db.scalar(select(Channel.server_id).where(Channel.id == channel_id))
-    if not server_id:
-        raise HTTPException(404, f"Channel ID '{channel_id}' doesn't belong to any server or doesn't exist")
-    has_server_access(db, server_id, user_id)
+def has_channel_access(db: Database, channel_id: UlidStr, user_id: AuthUser) -> str:
+    server_id_subquery = select(Channel.server_id).where(Channel.id == channel_id).scalar_subquery()
+    stmt_member = exists().where(Server_Member.server_id == server_id_subquery, Server_Member.member_id == user_id)
+    stmt_owner = exists().where(Server.id == server_id_subquery, Server.owner_id == user_id)
+
+    has_access = db.scalar(select(stmt_member | stmt_owner))
+    if not has_access:
+        raise HTTPException(401, f"You have no access to channel ID '{channel_id}'")
+
     return user_id
 HasChannelAccess = Annotated[str, Depends(has_channel_access)]
 
