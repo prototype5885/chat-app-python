@@ -159,14 +159,14 @@ dependencies = [
 requires-dist = [
     { name = "aiofiles", specifier = "==25.1.0" },
     { name = "argon2-cffi", specifier = "==25.1.0" },
-    { name = "bleach", specifier = ">=6.3.0" },
+    { name = "bleach", specifier = "==6.3.0" },
     { name = "fastapi", extras = ["standard-no-fastapi-cloud-cli"], specifier = "==0.128.0" },
     { name = "pillow", specifier = "==12.1.0" },
     { name = "pyjwt", specifier = "==2.10.1" },
     { name = "python-dotenv", specifier = "==1.2.1" },
     { name = "python-ulid", specifier = "==3.1.0" },
     { name = "sqlalchemy", specifier = "==2.0.46" },
-    { name = "websockets", specifier = ">=16.0" },
+    { name = "websockets", specifier = "==16.0" },
 ]
 
 [[package]]
