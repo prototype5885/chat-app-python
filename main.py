@@ -12,10 +12,6 @@ from fastapi.param_functions import Depends, Form, Path
 from fastapi.exceptions import HTTPException, WebSocketException
 from fastapi.security import APIKeyCookie
 from fastapi.websockets import WebSocket, WebSocketState, WebSocketDisconnect
-from sqlalchemy import CHAR, Engine, ForeignKey, String, create_engine, delete, event, func
-from sqlalchemy.sql import exists, or_, select, text, union, update
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
 from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, StringConstraints, model_validator
 from argon2 import PasswordHasher, exceptions
 from PIL import Image
@@ -29,6 +25,7 @@ import asyncio
 import bleach
 import shutil
 import json
+import sqlite3
 
 # Constants
 load_dotenv()
@@ -46,6 +43,7 @@ PATH_AVATARS = "public/avatars"
 PATH_ATTACHMENTS = "public/attachments"
 
 password_hasher = PasswordHasher()
+db: sqlite3.Connection
 
 
 # Text field lengths
@@ -64,69 +62,6 @@ SERVER_NAME_LEN = FieldLength(1, 64)
 CHANNEL_NAME_LEN = FieldLength(1, 32)
 MESSAGE_LEN = FieldLength(1, 4096)
 
-# SQLAlchemy models:
-class Base(DeclarativeBase):
-    def to_dict(self):
-        return {field.name:getattr(self, field.name) for field in self.__table__.c}
-    
-class User(Base):
-    __tablename__ = "users"
-    id: Mapped[str] = mapped_column(CHAR(ULID_LEN), primary_key=True)
-    username: Mapped[str] = mapped_column(String(USERNAME_LEN.max),index=True, unique=True)
-    email: Mapped[str] = mapped_column(index=True, unique=True)
-    display_name: Mapped[str] = mapped_column(String(DISPLAY_NAME_LEN.max))
-    picture: Mapped[Optional[str]]
-    password: Mapped[str]
-    banned: Mapped[bool] = mapped_column(default=False)
-    custom_status: Mapped[Optional[str]]
-    
-    servers: Mapped[List["Server"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    messages: Mapped[List["Message"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-
-class Server(Base):
-    __tablename__ = "servers"
-    id: Mapped[str] = mapped_column(CHAR(ULID_LEN), primary_key=True)
-    owner_id: Mapped[str] = mapped_column(CHAR(ULID_LEN), ForeignKey("users.id", ondelete="CASCADE"))
-    name: Mapped[str] = mapped_column(String(SERVER_NAME_LEN.max))
-    picture: Mapped[Optional[str]]
-    banner: Mapped[Optional[str]]
-    roles: Mapped[Optional[str]]
-    
-    user: Mapped["User"] = relationship(back_populates="servers")
-    channels: Mapped[List["Channel"]] = relationship(back_populates="server", cascade="all, delete-orphan")
-    members: Mapped[List["Server_Member"]] = relationship(back_populates="server", cascade="all, delete-orphan")
-
-class Channel(Base):
-    __tablename__ = "channels"
-    id: Mapped[str] = mapped_column(CHAR(ULID_LEN), primary_key=True)
-    server_id: Mapped[str] = mapped_column(CHAR(ULID_LEN), ForeignKey("servers.id", ondelete="CASCADE"))
-    name: Mapped[str] = mapped_column(String(CHANNEL_NAME_LEN.max))
-    # private: Mapped[bool] = mapped_column(Boolean, default=False)
-    # allowed_roles: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    # allowed_users: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    
-    server: Mapped["Server"] = relationship(back_populates="channels")
-    messages: Mapped[List["Message"]] = relationship(back_populates="channel", cascade="all, delete-orphan")
-
-class Message(Base):
-    __tablename__ = "messages"
-    id: Mapped[str] = mapped_column(CHAR(ULID_LEN), primary_key=True)
-    sender_id: Mapped[str] = mapped_column(CHAR(ULID_LEN), ForeignKey("users.id", ondelete="CASCADE"))
-    channel_id: Mapped[str] = mapped_column(CHAR(ULID_LEN), ForeignKey("channels.id", ondelete="CASCADE"))
-    message: Mapped[str] = mapped_column(String(MESSAGE_LEN.max))
-    attachments: Mapped[Optional[str]] = mapped_column(default=None)
-    edited: Mapped[Optional[str]] = mapped_column(default=None)
-    
-    channel: Mapped["Channel"] = relationship(back_populates="messages")
-    user: Mapped["User"] = relationship(back_populates="messages")
-
-class Server_Member(Base):
-    __tablename__ = "server_members"
-    server_id: Mapped[str] = mapped_column(CHAR(ULID_LEN), ForeignKey("servers.id", ondelete="CASCADE"), primary_key=True, index=True)
-    member_id: Mapped[str] = mapped_column(CHAR(ULID_LEN), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, index=True)
-    member_since: Mapped[str] = mapped_column(server_default=func.now())
-
-    server: Mapped["Server"] = relationship(back_populates="members")
 
 # Pydantic helpers:
 def clean_text_message(v: str) -> str:
@@ -234,9 +169,13 @@ display_name_cache: dict[str, str] = {}
 def get_display_name(user_id: str):
     if user_id in display_name_cache:
         return display_name_cache[user_id]
-    with Session(engine) as db:
-        display_name_cache[user_id] = db.execute(select(User.display_name).where(User.id == user_id)).scalar_one()
-        return display_name_cache[user_id]
+
+    q = "SELECT display_name FROM users WHERE id = ?"
+    row = db.execute(q, (user_id,)).fetchone()
+    assert row
+    
+    display_name_cache[user_id] = row[0]
+    return display_name_cache[user_id]
 
 def process_picture(file: bytes, resolution: tuple[int, int], crop_square: bool):
     try:
@@ -282,46 +221,83 @@ async def generate_resized_picture(path: FilePath, size: int):
         await f.write(bytes)
     return path
 
-# Database setup
-sqlite_filename = "database/database.db"
-db_url = f"sqlite:///{sqlite_filename}"
-connect_args = {}
-
-if db_url.startswith("sqlite"): 
-    os.makedirs(os.path.dirname(sqlite_filename), exist_ok=True)
-    connect_args = {"check_same_thread": False}
-
-engine = create_engine(url=db_url, connect_args=connect_args, echo=False)
-
-if engine.url.drivername == "sqlite": # runs on every connection to sqlite
-    @event.listens_for(Engine, "connect")
-    def set_sqlite_pragma(dbapi_connection, connection_record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON;")
-        cursor.execute("PRAGMA synchronous=NORMAL;")
-        cursor.close()
-
+def update_set_values(values: dict):
+    return ", ".join([f"{column} = :{column}" for column in values.keys()])
 
 # FastAPI setup
 @asynccontextmanager
 async def lifespan(app: FastAPI): # runs on start or before shutdown
-    Base.metadata.create_all(engine)
-    if engine.url.drivername == "sqlite":
-        with engine.connect() as db:
-            db.execute(text("PRAGMA journal_mode=WAL;"))
+    SQLITE_FILE_NAME = "database/database.db"
+    os.makedirs(os.path.dirname(SQLITE_FILE_NAME), exist_ok=True)
+
+    global db
+    db = sqlite3.connect(SQLITE_FILE_NAME)
+    db.row_factory = sqlite3.Row
+
+    schema = f"""
+        PRAGMA journal_mode=WAL;
+        PRAGMA synchronous=NORMAL;
+        PRAGMA foreign_keys = ON;
+
+        CREATE TABLE IF NOT EXISTS users (
+            id CHAR(26) PRIMARY KEY,
+            username VARCHAR({USERNAME_LEN.max}) NOT NULL UNIQUE,
+            email TEXT NOT NULL UNIQUE,
+            display_name VARCHAR({DISPLAY_NAME_LEN.max}) NOT NULL,
+            picture TEXT,
+            password TEXT NOT NULL,
+            banned BOOLEAN NOT NULL DEFAULT 0,
+            custom_status TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS servers (
+            id CHAR(26) PRIMARY KEY,
+            owner_id CHAR(26) NOT NULL,
+            name VARCHAR({SERVER_NAME_LEN.max}) NOT NULL,
+            picture TEXT,
+            banner TEXT,
+            roles TEXT,
+            FOREIGN KEY (owner_id) REFERENCES users (id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS channels (
+            id CHAR(26) PRIMARY KEY,
+            server_id CHAR(26) NOT NULL,
+            name VARCHAR({CHANNEL_NAME_LEN.max}) NOT NULL,
+            FOREIGN KEY (server_id) REFERENCES servers (id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS messages (
+            id CHAR(26) PRIMARY KEY,
+            sender_id CHAR(26) NOT NULL,
+            channel_id CHAR(26) NOT NULL,
+            message VARCHAR({MESSAGE_LEN.max}) NOT NULL,
+            attachments TEXT DEFAULT NULL,
+            edited TEXT DEFAULT NULL,
+            FOREIGN KEY (sender_id) REFERENCES users (id) ON DELETE CASCADE,
+            FOREIGN KEY (channel_id) REFERENCES channels (id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS server_members (
+            server_id CHAR(26) NOT NULL,
+            member_id CHAR(26) NOT NULL,
+            member_since DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (server_id, member_id),
+            FOREIGN KEY (server_id) REFERENCES servers (id) ON DELETE CASCADE,
+            FOREIGN KEY (member_id) REFERENCES users (id) ON DELETE CASCADE
+        );
+    """
+    with db as tx:
+        tx.executescript(schema)
+
     yield
-    # code after yield runs before shutdown
+    db.close()
 
 app = FastAPI(lifespan=lifespan)
 
 
 # FastAPI middlewares:
-def get_session():
-    with Session(engine, expire_on_commit=False) as session:
-        yield session
-Database = Annotated[Session, Depends(get_session)]
-
-def auth_user(db: Database, token: str | None = Depends(APIKeyCookie(name="token", auto_error=False))) -> str:
+async def auth_user(token: str | None = Depends(APIKeyCookie(name="token", auto_error=False))) -> str:
     redirect_headers = {"Location": "/login.html"}
     if not token:
         raise HTTPException(303, headers=redirect_headers)
@@ -334,55 +310,71 @@ def auth_user(db: Database, token: str | None = Depends(APIKeyCookie(name="token
     if not isinstance(user_id, str):
         raise HTTPException(303, "Error getting user_id from jwt", headers=redirect_headers)
 
-    banned = db.scalar(select(User.banned).where(User.id == user_id))
-    if banned is None:
+    row = db.execute("SELECT banned FROM users WHERE id = ?", (user_id,)).fetchone()
+    if row is None:
         raise HTTPException(303, "User id from jwt doesn't exist in database", headers=redirect_headers)
-    if banned is True:
+    if bool(row[0]) is not False:
         raise HTTPException(303, "User is banned", headers=redirect_headers)
 
     return user_id
 AuthUser = Annotated[str, Depends(auth_user)]
 
-def is_server_owner(db: Database, server_id: UlidStr, user_id: AuthUser) -> str:
-    stmt_owner = select(exists().where(Server.id == server_id, Server.owner_id == user_id))
+async def is_server_owner(server_id: UlidStr, user_id: AuthUser) -> str:
+    q = "SELECT EXISTS(SELECT 1 FROM servers WHERE id = ? AND owner_id = ?)"
+    row = db.execute(q, (server_id, user_id,)).fetchone()
 
-    is_owner = db.scalar(stmt_owner)
+    is_owner: bool = row[0] if row else False
     if not is_owner:
-        raise HTTPException(401, f"You don't own server ID '{server_id}'")
+        raise HTTPException(403, f"You don't own server ID '{server_id}'")
 
     return user_id
 IsServerOwner = Annotated[str, Depends(is_server_owner)]
 
-def has_server_access(db: Database, server_id: UlidStr, user_id: AuthUser) -> str:
-    stmt_member = exists().where(Server_Member.server_id == server_id, Server_Member.member_id == user_id)
-    stmt_owner = exists().where(Server.id == server_id, Server.owner_id == user_id)
-
-    has_access = db.scalar(select(stmt_member | stmt_owner))
+async def has_server_access(server_id: UlidStr, user_id: AuthUser) -> str:
+    q = """
+        SELECT EXISTS (
+            SELECT 1 FROM server_members WHERE server_id = :s_id AND member_id = :u_id
+            UNION
+            SELECT 1 FROM servers WHERE id = :s_id AND owner_id = :u_id
+        )"""
+    row = db.execute(q, {"s_id": server_id, "u_id": user_id}).fetchone()
+    has_access: bool = row[0] if row else False
     if not has_access:
-        raise HTTPException(401, f"You have no access to server ID '{server_id}'")
+        raise HTTPException(403, f"You have no access to server ID '{server_id}'")
 
     return user_id
 HasServerAccess = Annotated[str, Depends(has_server_access)]
 
-def is_channel_owner(db: Database, channel_id: UlidStr, user_id: AuthUser) -> str:
-    server_id_subquery = select(Channel.server_id).where(Channel.id == channel_id).scalar_subquery()
-    stmt_owner = exists().where(Server.id == server_id_subquery, Server.owner_id == user_id)
-    
-    is_owner = db.scalar(select(stmt_owner))
+async def is_channel_owner(channel_id: UlidStr, user_id: AuthUser) -> str:
+    q = """
+        SELECT EXISTS (
+            SELECT 1 FROM channels 
+            JOIN servers ON channels.server_id = servers.id 
+            WHERE channels.id = ? AND servers.owner_id = ?
+        )"""
+    row = db.execute(q, (channel_id, user_id,)).fetchone()
+
+    is_owner: bool = row[0] if row else False
     if not is_owner:
-        raise HTTPException(401, f"You don't own channel ID '{channel_id}'")
+        raise HTTPException(403, f"You don't own channel ID '{channel_id}'")
 
     return user_id
 IsChannelOwner = Annotated[str, Depends(is_channel_owner)]
 
-def has_channel_access(db: Database, channel_id: UlidStr, user_id: AuthUser) -> str:
-    server_id_subquery = select(Channel.server_id).where(Channel.id == channel_id).scalar_subquery()
-    stmt_member = exists().where(Server_Member.server_id == server_id_subquery, Server_Member.member_id == user_id)
-    stmt_owner = exists().where(Server.id == server_id_subquery, Server.owner_id == user_id)
+async def has_channel_access(channel_id: UlidStr, user_id: AuthUser) -> str:
+    q = """
+        SELECT EXISTS (
+            SELECT 1 FROM channels c
+            JOIN servers s ON c.server_id = s.id
+            LEFT JOIN server_members m ON s.id = m.server_id AND m.member_id = :u_id
+            WHERE c.id = :c_id 
+            AND (s.owner_id = :u_id OR m.member_id IS NOT NULL)
+        )"""
+    row = db.execute(q, {"c_id": channel_id, "u_id": user_id}).fetchone()
 
-    has_access = db.scalar(select(stmt_member | stmt_owner))
+    has_access: bool = row[0] if row else False
     if not has_access:
-        raise HTTPException(401, f"You have no access to channel ID '{channel_id}'")
+        raise HTTPException(403, f"You have no access to channel ID '{channel_id}'")
 
     return user_id
 HasChannelAccess = Annotated[str, Depends(has_channel_access)]
@@ -429,22 +421,20 @@ class WebSocketManager:
         
         match event:
             case "subscribe_to_message_list":
-                with Session(engine) as session:
-                    channel_id = data
-                    try: 
-                        has_channel_access(session, channel_id, user_id)
-                        subscribe("channel", channel_id)
-                    except Exception as e: 
-                        await reply_exception(e)
+                channel_id = data
+                try: 
+                    await has_channel_access(channel_id, user_id)
+                    subscribe("channel", channel_id)
+                except Exception as e: 
+                    await reply_exception(e)
 
             case "subscribe_to_channel_list":
-                with Session(engine) as session:
-                    server_id = data
-                    try: 
-                        has_server_access(session, server_id, user_id)
-                        subscribe("server", server_id)
-                    except Exception as e: 
-                        await reply_exception(e)
+                server_id = data
+                try: 
+                    await has_server_access(server_id, user_id)
+                    subscribe("server", server_id)
+                except Exception as e: 
+                    await reply_exception(e)
     
     async def emit(self, event: str, data: dict, target_subs: SubscriptionTarget, target_id: str):
         message = f"{event} {json.dumps(data)}"
@@ -452,12 +442,14 @@ class WebSocketManager:
 
         match target_subs:
             case "server_list":
-                with Session(engine) as db:
-                    select_stmt = select(User.id)
-                    owner_stmt = (select_stmt.join(Server, Server.owner_id == User.id).where(Server.id == target_id))
-                    member_stmt = (select_stmt.join(Server_Member, Server_Member.member_id == User.id)
-                        .where(Server_Member.server_id == target_id))
-                    user_ids = db.scalars(union(owner_stmt, member_stmt)).all()
+                q = """
+                    SELECT owner_id FROM servers WHERE id = :s_id
+                    UNION
+                    SELECT member_id FROM server_members WHERE server_id = :s_id
+                """
+                rows = db.execute(q, {"s_id": target_id}).fetchall()
+                user_ids: list[str] = [(row[0]) for row in rows]
+                assert user_ids
                     
                 for ws_conn, ws_info in list(self.clients.items()):
                     if ws_info.user_id in user_ids:
@@ -477,9 +469,15 @@ class WebSocketManager:
             await asyncio.gather(*tasks, return_exceptions=True)
                 
     # will send to those who have visual on affected change (like: user changed name)
-    async def emit_to_servers(self, event: str, data: dict, user_id: str, db: Database):
-        server_ids = db.scalars(select(Server.id).where(or_(Server.owner_id == user_id, Server.members
-            .any(Server_Member.member_id == user_id)))).all()
+    async def emit_to_servers(self, event: str, data: dict, user_id: str):
+        q = """
+            SELECT id FROM servers WHERE owner_id = :u_id
+            UNION
+            SELECT server_id FROM server_members WHERE member_id = :u_id
+        """
+        cursor = db.execute(q, {"u_id": user_id})
+        server_ids: list[str] = [row[0] for row in cursor.fetchall()]
+
         for server_id in server_ids:
             await self.emit(event, data, "server", server_id)
 
@@ -495,12 +493,11 @@ ws = WebSocketManager()
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     try:
-        with Session(engine) as session:
-            try:
-                user_id = auth_user(session, websocket.cookies["token"])
-                await ws.connect(websocket, user_id)
-            except Exception:
-                raise WebSocketException(1008, "Unauthorized")
+        try:
+            user_id = await auth_user(websocket.cookies["token"])
+            await ws.connect(websocket, user_id)
+        except Exception:
+            raise WebSocketException(1008, "Unauthorized")
 
         while True:
             raw_msg = await websocket.receive_text()
@@ -515,29 +512,32 @@ async def websocket_endpoint(websocket: WebSocket):
 v1 = APIRouter(prefix="/api/v1")
 
 @v1.post("/user/register", response_class=RedirectResponse)
-async def register_user(req: Annotated[UserRegisterRequest, Form()], db: Database):
+async def register_user(req: Annotated[UserRegisterRequest, Form()]):
+    hashed_password = password_hasher.hash(req.password)
     try:
-        user = User(id=str(ULID()), email=req.email, username=req.username, display_name=req.username, 
-                    password=password_hasher.hash(req.password))
-        db.add(user)
-        db.commit()
-    except IntegrityError:
+        with db as tx:
+            q = "INSERT INTO users (id, email, username, display_name, password) VALUES (?, ?, ?, ?, ?)"
+            tx.execute(q, (str(ULID()), req.email, req.username, req.username, hashed_password))
+    except sqlite3.IntegrityError:
         raise HTTPException(409, "User with same e-mail or username already exists")
     return RedirectResponse("/login.html", 303)
 
 @v1.post("/user/login", response_class=RedirectResponse)
-async def login_user(req: Annotated[UserLoginRequest, Form()], db: Database):
-    user = db.scalar(select(User).where(User.email == req.email))
-    if not user:
+async def login_user(req: Annotated[UserLoginRequest, Form()]):
+    q = "SELECT id, password FROM users WHERE email = ?"
+    row = db.execute(q, (req.email,)).fetchone()
+    if not row:
         raise HTTPException(401, "Bad login")
+    
+    user_id, password = row
     try:
-        password_hasher.verify(user.password, req.password)
+        password_hasher.verify(password, req.password)
     except exceptions.VerifyMismatchError:
         raise HTTPException(401, "Bad login")
 
     days: int = 14
     expires = datetime.now(timezone.utc) + timedelta(days=days)
-    encoded_jwt = jwt.encode({"user_id": user.id, "exp": expires}, JWT_SECRET, algorithm="HS256")
+    encoded_jwt = jwt.encode({"user_id": user_id, "exp": expires}, JWT_SECRET, algorithm="HS256")
     
     response = RedirectResponse("/", 303)
     response.set_cookie(key="token", value=encoded_jwt, httponly=True, secure=True, samesite="lax", max_age=days * 24 * 3600)
@@ -548,10 +548,9 @@ async def logout_user(response: Response):
     response.delete_cookie(key="token")
 
 @v1.delete("/user/delete", status_code=204, response_class=Response)
-async def delete_user(db: Database, user_id: AuthUser):
-    user = db.execute(select(User).where(User.id == user_id)).scalar_one()
-    db.delete(user)
-    db.commit()
+async def delete_user(user_id: AuthUser):
+    with db as tx:
+        tx.execute("DELETE FROM users WHERE id = ?", (user_id,))
 
     if user_id in display_name_cache:
         del display_name_cache[user_id]
@@ -565,190 +564,260 @@ async def get_user_id(user_id: AuthUser):
     return user_id
 
 @v1.get("/user", response_model=UserSchema)
-async def get_user_info(db: Database, user_id: AuthUser):
-    return db.execute(select(User.id, User.username, User.display_name, User.picture, User.custom_status)
-        .where(User.id == user_id)).one()
-
+async def get_user_info(user_id: AuthUser):
+    q = "SELECT id, username, display_name, picture, custom_status FROM users WHERE id = ?"
+    row = db.execute(q, (user_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, detail="User not found")
+    return dict(row)
+    
 @v1.patch("/user", response_model=UserEditResponse)
-async def update_user_info(req: Annotated[UserEditRequest, Form()], db: Database, user_id: AuthUser):
+async def update_user_info(req: Annotated[UserEditRequest, Form()], user_id: AuthUser):
     values = req.model_dump(exclude_unset=True)
-    db.execute(update(User).where(User.id == user_id).values(values))
-    db.commit()
+    if not values:
+        raise HTTPException(400, "No fields received")
+
+    with db as tx:
+        q = f"UPDATE users SET {update_set_values(values)} WHERE id = :u_id"
+        tx.execute(q, {**values, "u_id": user_id})
 
     if req.display_name:
         display_name_cache[user_id] = req.display_name
 
     data = UserEditResponse(id=user_id, **values).model_dump(exclude_unset=True)
     await ws.emit_to_user("self_user_info", data, user_id)
-    await ws.emit_to_servers("user_info", data, user_id, db)
+    await ws.emit_to_servers("user_info", data, user_id)
     return data
 
 @v1.post("/user/upload/avatar", response_class=PlainTextResponse)
-async def upload_user_avatar(db: Database, user_id: AuthUser, file: UploadFile | None = None):
+async def upload_user_avatar(user_id: AuthUser, file: UploadFile | None = None):
     file_hash = await save_picture(file, PATH_AVATARS, (256, 256), crop_square=True)
-    db.execute(update(User).where(User.id == user_id).values(picture=file_hash))
-    db.commit()
+    
+    with db as tx:
+        q = "UPDATE users SET picture = ? WHERE id = ?"
+        tx.execute(q, (file_hash, user_id,))
 
     data = UserEditResponse(id=user_id, picture=file_hash).model_dump(exclude_unset=True)
     await ws.emit_to_user("self_user_info", data, user_id)
-    await ws.emit_to_servers("user_info", data, user_id, db)
+    await ws.emit_to_servers("user_info", data, user_id)
     return file_hash
 
 @v1.post("/server", response_model=ServerSchema)
-async def create_server(req: ServerCreateRequest, db: Database, user_id: AuthUser):
-    server = Server(id=str(ULID()), owner_id=user_id, name=req.name)
-    db.add(server)
-    db.add(Channel(id=str(ULID()), server_id=server.id, name="Default channel"))
-    db.commit()
-    db.refresh(server)
-    return server
+async def create_server(req: ServerCreateRequest, user_id: AuthUser):
+    server_id = str(ULID())
+    channel_id = str(ULID())
+
+    with db as tx: 
+        q1 = "INSERT INTO servers (id, owner_id, name) VALUES (?, ?, ?)"
+        tx.execute(q1, (server_id, user_id, req.name))
+
+        q2 = "INSERT INTO channels (id, server_id, name) VALUES (?, ?, ?)"
+        tx.execute(q2, (channel_id, server_id, "Default channel"))
+    
+    q3 = "SELECT id, owner_id, name, picture, banner, roles FROM servers WHERE id = ?"
+    row = db.execute(q3, (server_id,)).fetchone()
+    return dict(row)
 
 @v1.get("/server/{server_id}", response_model=ServerSchema)
-async def get_server_info(server_id: UlidStr, db: Database, user_id: AuthUser):
-    server = db.scalar(select(Server).where(Server.id == server_id, Server.owner_id == user_id))
-    if not server:
-        raise HTTPException(401, f"You don't own any server with ID '{server_id}'")
-    return server
+async def get_server_info(server_id: UlidStr, user_id: AuthUser):
+    q = "SELECT * FROM servers WHERE id = ? AND owner_id = ?"
+    row = db.execute(q, (server_id, user_id,)).fetchone()
+    if not row:
+        raise HTTPException(403, f"You don't own any server with ID '{server_id}'")
+    return dict(row)
 
 @v1.patch("/server/{server_id}", response_model=ServerSchema)
-async def update_server_info(server_id: str, req: Annotated[ServerEditRequest, Form()], db: Database, user_id: IsServerOwner):
+async def update_server_info(server_id: str, req: Annotated[ServerEditRequest, Form()], user_id: IsServerOwner):
     values = req.model_dump(exclude_unset=True)
     if not values:
         raise HTTPException(400, "No fields were provided")
 
-    stmt = update(Server).where(Server.id == server_id, Server.owner_id == user_id).values(values).returning(Server)
-    server = db.execute(stmt).scalar_one()
-    db.commit()
+    with db as tx:
+        q = f"UPDATE servers SET {update_set_values(values)} WHERE id = :s_id AND owner_id = :u_id RETURNING *"
+        row = tx.execute(q, {**values, "s_id": server_id, "u_id": user_id}).fetchone()
+        assert row
 
-    await ws.emit("server_info", server.to_dict(), "server_list", server_id)
+    server = ServerSchema(**row)
+    await ws.emit("server_info", server.model_dump(), "server_list", server_id)
     return server
 
 @v1.post("/server/{server_id}/upload/avatar", response_class=PlainTextResponse)
-async def upload_server_avatar(server_id: str, db: Database, user_id: IsServerOwner, file: UploadFile | None = None):
+async def upload_server_avatar(server_id: str, user_id: IsServerOwner, file: UploadFile | None = None):
     file_hash = await save_picture(file, PATH_AVATARS, (256, 256), crop_square=True)
-    values = {"picture": file_hash}
 
-    stmt = update(Server).where(Server.id == server_id, Server.owner_id == user_id).values(values).returning(Server)
-    server = db.execute(stmt).scalar_one()
-    db.commit()
+    with db as tx:
+        q = "UPDATE servers SET picture = ? WHERE id = ? AND owner_id = ? RETURNING *"
+        row = tx.execute(q, (file_hash, server_id, user_id,)).fetchone()
+        assert row
 
-    await ws.emit("server_info", server.to_dict(), "server_list", server_id)
+    server = ServerSchema(**row).model_dump()
+    await ws.emit("server_info", server, "server_list", server_id)
     return file_hash
 
 @v1.get("/servers", response_model=list[ServerSchema])
-async def get_servers(db: Database, user_id: AuthUser):
-    return db.scalars(select(Server).where(
-        or_(Server.owner_id == user_id, Server.members.any(Server_Member.member_id == user_id)))).all()
+async def get_servers(user_id: AuthUser):
+    q = """
+        SELECT s.* FROM servers s WHERE s.owner_id = :u_id
+        UNION
+        SELECT s.* FROM servers s
+        JOIN server_members m ON s.id = m.server_id
+        WHERE m.member_id = :u_id
+    """
+    rows = db.execute(q, {"u_id": user_id}).fetchall()
+    return [(dict(row)) for row in rows]
 
 @v1.delete("/server/{server_id}", status_code=202, response_class=Response)
-async def delete_server(server_id: UlidStr, db: Database, user_id: AuthUser):
-    server = db.scalar(select(Server).where(Server.id == server_id, Server.owner_id == user_id))
-    if not server:
-        raise HTTPException(401, f"You don't own any server with ID '{server_id}'")
-
-    # need to emit event before deletion as it would be no longer possible to get affected clients
-    # might not be optimal
+async def delete_server(server_id: UlidStr, user_id: IsServerOwner):
+    # need to emit event before deletion as it would be no longer possible to get affected clients after
     data = {"id": server_id}
     await ws.emit("delete_server", data, "server_list", server_id)
+
+    with db as tx:
+        tx.execute("DELETE FROM servers WHERE id = ?", (server_id,))
     
-    db.delete(server)
-    db.commit()
-
 @v1.post("/server/{server_id}/channel", status_code=202, response_class=Response)
-async def create_channel(server_id: str, req: ChannelCreateRequest, db: Database, user_id: IsServerOwner):
-    channel = Channel(id=str(ULID()), server_id=server_id, name=req.name)
-    db.add(channel)
-    db.commit()
+async def create_channel(server_id: str, req: ChannelCreateRequest, user_id: IsServerOwner):
+    channel = ChannelSchema(id=str(ULID()), server_id=server_id, name=req.name).model_dump()
+    with db as tx:
+        q = "INSERT INTO channels (id, server_id, name) VALUES(:id, :server_id, :name)"
+        tx.execute(q, channel)
 
-    await ws.emit("create_channel", channel.to_dict(), "server", server_id)
+    await ws.emit("create_channel", channel, "server", server_id)
 
 @v1.get("/channel/{channel_id}", response_model=ChannelSchema)
-async def get_channel_info(db: Database, channel_id: str, user_id: IsChannelOwner):
-    return db.execute(select(Channel).where(Channel.id == channel_id)).scalar_one()
+async def get_channel_info(channel_id: str, user_id: IsChannelOwner):
+    q = "SELECT * FROM channels WHERE id = ?"
+    row = db.execute(q, (channel_id,)).fetchone()
+    return dict(row)
 
 @v1.patch("/channel/{channel_id}", status_code=202, response_class=Response)
-async def update_channel_info(channel_id: str, req: Annotated[ChannelEditRequest, Form()], db: Database, user_id: IsChannelOwner):
+async def update_channel_info(channel_id: str, req: Annotated[ChannelEditRequest, Form()], user_id: IsChannelOwner):
     values = req.model_dump(exclude_unset=True)
-    stmt = update(Channel).where(Channel.id == channel_id).values(values).returning(Channel)
-    channel = db.execute(stmt).scalar_one()
-    db.commit()
-    await ws.emit("modify_channel", channel.to_dict(), "server", channel.server_id)
+    if not values:
+        raise HTTPException(400, "No fields were provided")
+        
+    q = f"UPDATE channels SET {update_set_values(values)} WHERE id = :c_id RETURNING *"
+    with db as tx:
+        row = tx.execute(q, {**values, "c_id": channel_id}).fetchone()
+
+    channel = ChannelSchema(**row)
+    await ws.emit("modify_channel", channel.model_dump(), "server", channel.server_id)
 
 @v1.get("/server/{server_id}/channels", response_model=list[ChannelSchema])
-async def get_channels(server_id: str, db: Database, user_id: HasServerAccess):
-    return db.scalars(select(Channel).where(Channel.server_id == server_id)).all()
+async def get_channels(server_id: str, user_id: HasServerAccess):
+    q = "SELECT * FROM channels WHERE server_id = ?"
+    rows = db.execute(q, (server_id,)).fetchall()
+    return [(dict(row)) for row in rows]
 
 @v1.delete("/channel/{channel_id}", status_code=202, response_class=Response)
-async def delete_channel(db: Database, channel_id: str, user_id: IsChannelOwner):
-    server_id = db.execute(delete(Channel).where(Channel.id == channel_id).returning(Channel.server_id)).scalar_one()
-    db.commit()
+async def delete_channel(channel_id: str, user_id: IsChannelOwner):
+    with db as tx:
+        q = "DELETE FROM channels WHERE id = ? RETURNING server_id"
+        row = tx.execute(q, (channel_id,)).fetchone()
+        assert row
+
+    server_id: str = row[0]
     data = {"id": channel_id}
     await ws.emit("delete_channel", data, "server", server_id)
 
 @v1.get("/server/{server_id}/members", response_model=list[UserSchema])
-async def get_members(server_id: str, db: Database, _: HasServerAccess):
-    select_stmt = select(User.id, User.username, User.display_name, User.picture, User.custom_status)
-    
-    owner_stmt = (select_stmt.join(Server, Server.owner_id == User.id)
-        .where(Server.id == server_id))
-    member_stmt = (select_stmt.join(Server_Member, Server_Member.member_id == User.id)
-        .where(Server_Member.server_id == server_id))
+async def get_members(server_id: str, _: HasServerAccess):
+    q = """
+        SELECT u.id, u.username, u.display_name, u.picture, u.custom_status
+        FROM users u JOIN servers s ON s.owner_id = u.id WHERE s.id = :s_id
+        UNION
+        SELECT u.id, u.username, u.display_name, u.picture, u.custom_status
+        FROM users u JOIN server_members sm ON sm.member_id = u.id WHERE sm.server_id = :s_id
+    """
+    with db as tx:
+        rows = tx.execute(q, {"s_id": server_id}).fetchall()
 
-    return db.execute(union(owner_stmt, member_stmt)).all()
+    return [dict(row) for row in rows]
 
 @v1.post("/channel/{channel_id}/message", status_code=202, response_class=Response)
-async def create_message(channel_id: str, req: MessageCreateRequest, db: Database, user_id: HasChannelAccess):
-    message = Message(id=str(ULID()), sender_id=user_id, channel_id=channel_id, message=req.message)
-    db.add(message)
-    db.commit()
+async def create_message(channel_id: str, req: MessageCreateRequest, user_id: HasChannelAccess):
+    message_id = str(ULID())
 
-    display_name, picture = db.execute(select(User.display_name, User.picture).where(User.id == user_id)).one()
+    with db as tx:
+        q1 = "INSERT INTO messages (id, sender_id, channel_id, message) VALUES (?, ?, ?, ?)"
+        tx.execute(q1, (message_id, user_id, channel_id, req.message))
 
-    data = MessageResponse(**message.to_dict(), display_name=display_name, picture=picture).model_dump()
+        q2 = "SELECT display_name, picture FROM users WHERE id = ?"
+        row = tx.execute(q2, (user_id,)).fetchone()
+        assert row
+        display_name, picture = row
+    
+    data = MessageResponse(
+        id=message_id, sender_id=user_id, channel_id=channel_id, 
+        message=req.message, display_name=display_name, picture=picture
+    ).model_dump()
     await ws.emit("create_message", data, "channel", channel_id)
 
 @v1.patch("/message/{message_id}", status_code=202, response_class=Response)
-async def edit_message(message_id: UlidStr, req: MessageEditRequest, db: Database, user_id: AuthUser):
-    msg = db.scalar(update(Message).where(Message.id == message_id, Message.sender_id == user_id)
-        .values({"message": req.message, "edited": func.now()}).returning(Message))
-    if not msg:
-        raise HTTPException(401, f"Not authorised to edit message ID '{message_id}'")
-    db.commit()
+async def edit_message(message_id: UlidStr, req: MessageEditRequest, user_id: AuthUser):
+    with db as tx:
+        q = """
+            UPDATE messages SET message = ?, edited = CURRENT_TIMESTAMP 
+            WHERE id = ? AND sender_id = ? 
+            RETURNING *
+        """
+        row = tx.execute(q, (req.message, message_id, user_id,)).fetchone()
+    if not row:
+        raise HTTPException(403, f"Not authorised to edit message ID '{message_id}'")
 
-    data = MessageEditResponse.model_validate(msg).model_dump()
-    await ws.emit("edit_message", data, "channel", msg.channel_id)
+    msg = MessageEditResponse(**row).model_dump()
+    channel_id = row["channel_id"]
+    await ws.emit("edit_message", msg, "channel", channel_id)
 
 @v1.delete("/message/{message_id}", status_code=202, response_class=Response)
-async def delete_message(message_id: UlidStr, db: Database, user_id: AuthUser):
-    msg = db.scalar(select(Message).where(Message.id == message_id, Message.sender_id == user_id))
-    if not msg:
-        raise HTTPException(401, f"Not authorised to delete message ID '{message_id}'")
-    
-    db.delete(msg)
-    db.commit()
+async def delete_message(message_id: UlidStr, user_id: AuthUser):
+    with db as tx:
+        q = "DELETE FROM messages WHERE id = ? AND sender_id = ? RETURNING channel_id"
+        row = tx.execute(q, (message_id, user_id,)).fetchone()
+    if not row:
+        raise HTTPException(403, f"Not authorised to delete message ID '{message_id}'")
 
-    data = {"id": msg.id}
-    await ws.emit("delete_message", data, "channel", msg.channel_id)
+    channel_id: str = row[0]
+
+    data = {"id": message_id}
+    await ws.emit("delete_message", data, "channel", channel_id)
 
 @v1.get("/channel/{channel_id}/messages", response_model=list[MessageResponse])
-async def get_messages(channel_id: str, db: Database, user_id: HasChannelAccess,
+async def get_messages(channel_id: str, user_id: HasChannelAccess,
     message_id: str | None = None, direction: Literal["before", "after", None] = None
 ):
-    query = select(Message, User.display_name, User.picture).join(User).where(Message.channel_id == channel_id)
-    
-    if message_id:
-        if direction == "before":
-            query = query.where(Message.id < message_id).order_by(Message.id.desc()) # if scrolling up in chat
-        elif direction == "after":
-            query = query.where(Message.id > message_id).order_by(Message.id.asc()) # if scrolling down in chat
-        else:
-            raise HTTPException(400, "Parameter 'direction' is missing")
-    else: 
-        query = query.order_by(Message.id.desc()) # default if just requesting latest messages
+    # fetch newer messages scrolling down
+    if message_id and direction == "after": 
+        q = """
+            SELECT m.*, u.display_name, u.picture FROM messages m 
+            JOIN users u ON m.sender_id = u.id 
+            WHERE m.channel_id = :c_id AND m.id > :m_id
+            ORDER BY m.id ASC LIMIT 100
+        """
+        params = {"c_id": channel_id, "m_id": message_id}
 
-    results = db.execute(query.limit(100)).all()
-    return [MessageResponse(**message.to_dict(), display_name=display_name, picture=picture) 
-        for message, display_name, picture in results]
+    # fetch older messages scrolling up
+    elif message_id and direction == "before": 
+        q = """
+            SELECT m.*, u.display_name, u.picture FROM messages m 
+            JOIN users u ON m.sender_id = u.id 
+            WHERE m.channel_id = :c_id AND m.id < :m_id
+            ORDER BY m.id DESC LIMIT 100
+        """
+        params = {"c_id": channel_id, "m_id": message_id}
+
+    # fetch last messages
+    else: 
+        q = """
+            SELECT m.*, u.display_name, u.picture FROM messages m 
+            JOIN users u ON m.sender_id = u.id 
+            WHERE m.channel_id = :c_id
+            ORDER BY m.id DESC LIMIT 100
+        """
+        params = {"c_id": channel_id}
+
+    rows = db.execute(q, params).fetchall()
+    return [(dict(row)) for row in rows]
 
 @v1.post("/channel/{channel_id}/typing/{value}", status_code=202, response_class=Response)
 async def typing(value: Literal["start", "stop"], channel_id: str, user_id: HasChannelAccess):
