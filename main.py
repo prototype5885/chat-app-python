@@ -690,7 +690,7 @@ async def get_channel_info(channel_id: str, user_id: IsChannelOwner):
     row = db.execute(q, (channel_id,)).fetchone()
     return dict(row)
 
-@v1.patch("/channel/{channel_id}", status_code=202, response_class=Response)
+@v1.patch("/channel/{channel_id}", response_model=ChannelSchema)
 async def update_channel_info(channel_id: str, req: Annotated[ChannelEditRequest, Form()], user_id: IsChannelOwner):
     values = req.model_dump(exclude_unset=True)
     if not values:
@@ -702,6 +702,7 @@ async def update_channel_info(channel_id: str, req: Annotated[ChannelEditRequest
 
     channel = ChannelSchema(**row)
     await ws.emit("modify_channel", channel.model_dump(), "server", channel.server_id)
+    return channel
 
 @v1.get("/server/{server_id}/channels", response_model=list[ChannelSchema])
 async def get_channels(server_id: str, user_id: HasServerAccess):
