@@ -1,11 +1,11 @@
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass
 from pathlib import Path as FilePath
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, Literal, Optional
 from ulid import ULID
 from fastapi import APIRouter, FastAPI,  Response, UploadFile
 from fastapi.param_functions import Depends, Form, Path
@@ -163,20 +163,43 @@ class MessageResponse(BaseModel):
     picture: Optional[str] = None
 
 # Cache
-display_name_cache: dict[str, str] = {}
+class UserCache:
+    @dataclass()
+    class UserCacheValue:
+        display_name: str
+        picture: str
+        def __iter__(self):
+            return iter(astuple(self))
+
+    _cache: dict[str, UserCacheValue] = {}
+
+    def _set_from_db(self, user_id: str):
+        q = "SELECT display_name, picture FROM users WHERE id = ?"
+        row = db.execute(q, (user_id,)).fetchone()
+        if not row:
+            self.delete(user_id)
+            raise HTTPException(500)
+        
+        self._cache[user_id] = self.UserCacheValue(row[0], row[1])
+ 
+    def get(self, user_id: str):
+        if user_id not in self._cache:
+            self._set_from_db(user_id)
+        return self._cache[user_id]
+
+    def set(self, user_id: str, display_name: str | None = None, picture: str | None = None):
+        if user_id in self._cache:
+            if display_name:
+                self._cache[user_id].display_name = display_name
+            if picture:
+                self._cache[user_id].picture = picture
+
+    def delete(self, user_id: str):
+        self._cache.pop(user_id, None)
+
+user_cache = UserCache()
 
 # Helpers
-def get_display_name(user_id: str):
-    if user_id in display_name_cache:
-        return display_name_cache[user_id]
-
-    q = "SELECT display_name FROM users WHERE id = ?"
-    row = db.execute(q, (user_id,)).fetchone()
-    assert row
-    
-    display_name_cache[user_id] = row[0]
-    return display_name_cache[user_id]
-
 def process_picture(file: bytes, resolution: tuple[int, int], crop_square: bool):
     try:
         with Image.open(io.BytesIO(file)) as img:
@@ -197,7 +220,7 @@ def process_picture(file: bytes, resolution: tuple[int, int], crop_square: bool)
 
 async def save_picture(file: UploadFile | None, path: str, resolution: tuple[int, int], crop_square: bool):
     if not file:
-        return None
+        raise HTTPException(400, "No file was received")
     avatar = await file.read()
     bytes = process_picture(avatar, resolution, crop_square) 
    
@@ -551,9 +574,7 @@ async def logout_user(response: Response):
 async def delete_user(user_id: AuthUser):
     with db as tx:
         tx.execute("DELETE FROM users WHERE id = ?", (user_id,))
-
-    if user_id in display_name_cache:
-        del display_name_cache[user_id]
+    user_cache.delete(user_id)
 
 @v1.get("/test", response_class=PlainTextResponse)
 async def test():
@@ -581,8 +602,7 @@ async def update_user_info(req: Annotated[UserEditRequest, Form()], user_id: Aut
         q = f"UPDATE users SET {update_set_values(values)} WHERE id = :u_id"
         tx.execute(q, {**values, "u_id": user_id})
 
-    if req.display_name:
-        display_name_cache[user_id] = req.display_name
+    user_cache.set(user_id, display_name=req.display_name)
 
     data = UserEditResponse(id=user_id, **values).model_dump(exclude_unset=True)
     await ws.emit_to_user("self_user_info", data, user_id)
@@ -596,6 +616,8 @@ async def upload_user_avatar(user_id: AuthUser, file: UploadFile | None = None):
     with db as tx:
         q = "UPDATE users SET picture = ? WHERE id = ?"
         tx.execute(q, (file_hash, user_id,))
+
+    user_cache.set(user_id, picture=file_hash)
 
     data = UserEditResponse(id=user_id, picture=file_hash).model_dump(exclude_unset=True)
     await ws.emit_to_user("self_user_info", data, user_id)
@@ -740,14 +762,10 @@ async def create_message(channel_id: str, req: MessageCreateRequest, user_id: Ha
     message_id = str(ULID())
 
     with db as tx:
-        q1 = "INSERT INTO messages (id, sender_id, channel_id, message) VALUES (?, ?, ?, ?)"
-        tx.execute(q1, (message_id, user_id, channel_id, req.message))
+        q = "INSERT INTO messages (id, sender_id, channel_id, message) VALUES (?, ?, ?, ?)"
+        tx.execute(q, (message_id, user_id, channel_id, req.message))
 
-        q2 = "SELECT display_name, picture FROM users WHERE id = ?"
-        row = tx.execute(q2, (user_id,)).fetchone()
-        assert row
-        display_name, picture = row
-    
+    display_name, picture = user_cache.get(user_id)
     data = MessageResponse(
         id=message_id, sender_id=user_id, channel_id=channel_id, 
         message=req.message, display_name=display_name, picture=picture
@@ -823,7 +841,8 @@ async def get_messages(channel_id: str, user_id: HasChannelAccess,
 @v1.post("/channel/{channel_id}/typing/{value}", status_code=202, response_class=Response)
 async def typing(value: Literal["start", "stop"], channel_id: str, user_id: HasChannelAccess):
     if value == "start":
-        data = {"id": user_id, "display_name": get_display_name(user_id)}
+        display_name = user_cache.get(user_id).display_name
+        data = {"id": user_id, "display_name": display_name}
     else:
         data = {"id": user_id}
     await ws.emit(f"{value}_typing", data, "channel", channel_id)
