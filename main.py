@@ -14,7 +14,7 @@ from fastapi.security import APIKeyCookie
 from fastapi.websockets import WebSocket, WebSocketState, WebSocketDisconnect
 from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, StringConstraints, model_validator
 from argon2 import PasswordHasher, exceptions
-from PIL import Image, ImageSequence
+from PIL import Image
 import os
 import io
 import hashlib
@@ -78,7 +78,7 @@ DisplayNameStr = Annotated[str, Field(**DISPLAY_NAME_LEN.kwargs())]
 ServerNameStr = Annotated[str, Field(**SERVER_NAME_LEN.kwargs())]
 ChannelNameStr = Annotated[str, Field(**CHANNEL_NAME_LEN.kwargs())]
 MessageStr = Annotated[str, Field(**MESSAGE_LEN.kwargs()), AfterValidator(clean_text_message)]
-PictureName = Annotated[str, Path(pattern=r"^[a-f0-9]{64}\.(?:webp|gif)$")]
+PictureName = Annotated[str, Path(pattern=r"^[a-f0-9]{64}\.webp$")]
 
 # Pydantic models:
 class UserRegisterRequest(BaseModel):
@@ -200,7 +200,7 @@ class UserCache:
 user_cache = UserCache()
 
 # Helpers
-def process_webp(file: bytes, resolution: tuple[int, int], crop_square: bool):
+def process_picture(file: bytes, resolution: tuple[int, int], crop_square: bool):
     try:
         with Image.open(io.BytesIO(file)) as img:
             if img.mode != "RGB":
@@ -208,7 +208,7 @@ def process_webp(file: bytes, resolution: tuple[int, int], crop_square: bool):
             
             if crop_square:
                 s = min(img.size) # size 
-                w, h = img.size
+                w, h = img.size # width, height 
                 img = img.crop(((w - s) // 2, (h - s) // 2, (w + s) // 2, (h + s) // 2))
 
             img = img.resize(resolution, Image.Resampling.LANCZOS)
@@ -217,63 +217,32 @@ def process_webp(file: bytes, resolution: tuple[int, int], crop_square: bool):
             return buffer.getvalue()
     except: 
         raise HTTPException(422, "Error processing received picture")
-    
-def process_gif(file: bytes, resolution: tuple[int, int], crop_square: bool):
-    try:
-        with Image.open(io.BytesIO(file)) as img:
-            frames: list[Image.Image] = []
-            for frame in ImageSequence.Iterator(img):
-                img = frame.copy()
 
-                if crop_square:
-                    s = min(img.size) # size 
-                    w, h = img.size
-                    img = img.crop(((w - s) // 2, (h - s) // 2, (w + s) // 2, (h + s) // 2))
-                
-                img = img.resize(resolution, Image.Resampling.LANCZOS)
-                frames.append(img)
-
-            buffer = io.BytesIO()
-            frames[0].save(
-                buffer, format="GIF", save_all=True, append_images=frames[1:], 
-                optimize=True, loop=img.info.get("loop", 0), disposal=2
-            )
-            return buffer.getvalue()
-    except Exception:
-        raise HTTPException(422, "Error processing received GIF")
-
-async def process_uploaded_avatar(file: UploadFile | None, path: str, resolution: tuple[int, int], crop_square: bool):
+async def save_avatar(file: UploadFile | None, path: str, resolution: tuple[int, int], crop_square: bool):
     if not file:
         raise HTTPException(400, "No file was received")
-
-    if file.content_type == "image/gif":
-        bytes = process_gif(await file.read(), resolution, crop_square)
-        ext = ".gif"
-    else:
-        bytes = process_webp(await file.read(), resolution, crop_square)
-        ext = ".webp"
+    avatar = await file.read()
+    bytes = process_picture(avatar, resolution, crop_square) 
    
-    hash = hashlib.sha256(bytes).hexdigest()
-    file_name = f"{hash}{ext}"
-    final_path = FilePath(f"{path}/{file_name[:2]}/{file_name}")
+    file_hash = hashlib.sha256(bytes).hexdigest()
+    file_name = f"{file_hash}.webp"
+    final_path = FilePath(f"{path}/{file_name}")
 
     os.makedirs(os.path.dirname(final_path), exist_ok=True)
     async with aiofiles.open(final_path, "wb") as f:
         await f.write(bytes)
     return file_name
 
-async def generate_resized_avatar(original_path: FilePath, size: int):
-    async with aiofiles.open(original_path, "rb") as file:
-        if original_path.suffix == ".gif":
-            bytes = process_gif(await file.read(), (size, size), False)
-        else:
-            bytes = process_webp(await file.read(), (size, size), False) 
+async def generate_resized_picture(path: FilePath, size: int):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    async with aiofiles.open(path, "rb") as img_file:
+        bytes = process_picture(await img_file.read(), (size, size), False) 
 
-    resized_path = FilePath(f"{original_path.parent}/{size}/{original_path.name}")
-    os.makedirs(os.path.dirname(resized_path), exist_ok=True)
-    async with aiofiles.open(resized_path, "wb") as f:
+    path = FilePath(f"{path.parent}/{size}/{path.name}")
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    async with aiofiles.open(path, "wb") as f:
         await f.write(bytes)
-    return resized_path
 
 def update_set_values(values: dict):
     return ", ".join([f"{column} = :{column}" for column in values.keys()])
@@ -642,7 +611,7 @@ async def update_user_info(req: Annotated[UserEditRequest, Form()], user_id: Aut
 
 @v1.post("/user/upload/avatar", response_class=PlainTextResponse)
 async def upload_user_avatar(user_id: AuthUser, file: UploadFile | None = None):
-    file_name = await process_uploaded_avatar(file, PATH_AVATARS, (256, 256), crop_square=True)
+    file_name = await save_avatar(file, PATH_AVATARS, (256, 256), crop_square=True)
     
     with db as tx:
         q = "UPDATE users SET picture = ? WHERE id = ?"
@@ -696,7 +665,7 @@ async def update_server_info(server_id: str, req: Annotated[ServerEditRequest, F
 
 @v1.post("/server/{server_id}/upload/avatar", response_class=PlainTextResponse)
 async def upload_server_avatar(server_id: str, user_id: IsServerOwner, file: UploadFile | None = None):
-    file_name = await process_uploaded_avatar(file, PATH_AVATARS, (256, 256), crop_square=True)
+    file_name = await save_avatar(file, PATH_AVATARS, (256, 256), crop_square=True)
 
     with db as tx:
         q = "UPDATE servers SET picture = ? WHERE id = ? AND owner_id = ? RETURNING *"
@@ -918,14 +887,14 @@ serve_avatars_lock = asyncio.Lock()
 @app.get("/avatars/{name}", response_class=FileResponse)
 async def serve_avatars(user_id: AuthUser, name: PictureName, size: Optional[Literal["80", "96"]] = None):
     headers = {"Cache-Control": "private, max-age=2592000, immutable"}
-    original_file_path = FilePath(f"{PATH_AVATARS}/{name[:2]}/{name}")
+    original_file_path = FilePath(f"{PATH_AVATARS}/{name}")
 
     if not size: # if requests original
         if original_file_path.is_file():
             return FileResponse(original_file_path, headers=headers)
         raise HTTPException(404)
             
-    resized_file_path = FilePath(f"{PATH_AVATARS}/{name[:2]}/{size}/{name}") # if requests resized
+    resized_file_path = FilePath(f"{PATH_AVATARS}/{size}/{name}") # if requests resized
     if resized_file_path.is_file():
         return FileResponse(resized_file_path, headers=headers)
         
@@ -933,7 +902,7 @@ async def serve_avatars(user_id: AuthUser, name: PictureName, size: Optional[Lit
         raise HTTPException(404)
     async with serve_avatars_lock:
         if not resized_file_path.is_file():
-            await generate_resized_avatar(original_file_path, int(size))
+            await generate_resized_picture(original_file_path, int(size))
     return FileResponse(resized_file_path, headers=headers)
 
 # Svelte file handlers
