@@ -26,6 +26,16 @@ import bleach
 import shutil
 import json
 import sqlite3
+import yaml
+
+# Config file
+class Config(BaseModel):
+    cache_avatars: bool
+
+with open("config.yaml", "r") as file:
+    raw_config = yaml.safe_load(file)
+    cfg = Config.model_validate(raw_config)
+    print("Successfully loaded config file")
 
 # Constants
 load_dotenv()
@@ -200,49 +210,47 @@ class UserCache:
 user_cache = UserCache()
 
 # Helpers
-def process_picture(file: bytes, resolution: tuple[int, int], crop_square: bool):
+async def save_avatar(file: UploadFile):
+    buffer = io.BytesIO()
     try:
-        with Image.open(io.BytesIO(file)) as img:
+        with Image.open(io.BytesIO(await file.read())) as img:
             if img.mode != "RGB":
                 img = img.convert("RGB")
-            
-            if crop_square:
-                s = min(img.size) # size 
-                w, h = img.size # width, height 
-                img = img.crop(((w - s) // 2, (h - s) // 2, (w + s) // 2, (h + s) // 2))
-
-            img = img.resize(resolution, Image.Resampling.LANCZOS)
-            buffer = io.BytesIO()
-            img.save(buffer, format="WEBP", quality=75)
-            return buffer.getvalue()
+        
+            s = min(img.size) # size 
+            w, h = img.size # width, height 
+            img = img.crop(((w - s) // 2, (h - s) // 2, (w + s) // 2, (h + s) // 2))
+            img = img.resize((256, 256), Image.Resampling.LANCZOS)
+            img.save(buffer, format="WEBP", quality=75, method=6)
     except: 
-        raise HTTPException(422, "Error processing received picture")
-
-async def save_avatar(file: UploadFile | None, path: str, resolution: tuple[int, int], crop_square: bool):
-    if not file:
-        raise HTTPException(400, "No file was received")
-    avatar = await file.read()
-    bytes = process_picture(avatar, resolution, crop_square) 
+        raise HTTPException(422, "Error processing received avatar")
    
-    file_hash = hashlib.sha256(bytes).hexdigest()
+    buffer.seek(0)
+    img_bytes = buffer.getvalue()
+    file_hash = hashlib.sha256(img_bytes).hexdigest()
     file_name = f"{file_hash}.webp"
-    final_path = FilePath(f"{path}/{file_name}")
+    final_path = FilePath(f"{PATH_AVATARS}/{file_name}")
 
-    os.makedirs(os.path.dirname(final_path), exist_ok=True)
+    os.makedirs(PATH_AVATARS, exist_ok=True)
     async with aiofiles.open(final_path, "wb") as f:
-        await f.write(bytes)
+        await f.write(img_bytes)
     return file_name
 
-async def generate_resized_picture(path: FilePath, size: int):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    async with aiofiles.open(path, "rb") as img_file:
-        bytes = process_picture(await img_file.read(), (size, size), False) 
-
-    path = FilePath(f"{path.parent}/{size}/{path.name}")
-
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    async with aiofiles.open(path, "wb") as f:
-        await f.write(bytes)
+async def generate_resized_avatar(original_path: FilePath, size: int):
+    buffer = io.BytesIO()
+    async with aiofiles.open(original_path, "rb") as file:
+        with Image.open(io.BytesIO(await file.read())) as img:
+            img = img.resize((size, size), Image.Resampling.LANCZOS)
+            img.save(buffer, format="WEBP", quality=75, method=6)
+            
+    buffer.seek(0)
+    avatar_bytes = buffer.getvalue()
+    if cfg.cache_avatars:
+        resized_file_path = FilePath(f"{original_path.parent}/{size}/{original_path.name}")
+        os.makedirs(os.path.dirname(resized_file_path), exist_ok=True)
+        async with aiofiles.open(resized_file_path, "wb") as f:
+            await f.write(avatar_bytes)
+    return avatar_bytes
 
 def update_set_values(values: dict):
     return ", ".join([f"{column} = :{column}" for column in values.keys()])
@@ -610,8 +618,8 @@ async def update_user_info(req: Annotated[UserEditRequest, Form()], user_id: Aut
     return data
 
 @v1.post("/user/upload/avatar", response_class=PlainTextResponse)
-async def upload_user_avatar(user_id: AuthUser, file: UploadFile | None = None):
-    file_name = await save_avatar(file, PATH_AVATARS, (256, 256), crop_square=True)
+async def upload_user_avatar(user_id: AuthUser, file: UploadFile):
+    file_name = await save_avatar(file)
     
     with db as tx:
         q = "UPDATE users SET picture = ? WHERE id = ?"
@@ -664,8 +672,8 @@ async def update_server_info(server_id: str, req: Annotated[ServerEditRequest, F
     return server
 
 @v1.post("/server/{server_id}/upload/avatar", response_class=PlainTextResponse)
-async def upload_server_avatar(server_id: str, user_id: IsServerOwner, file: UploadFile | None = None):
-    file_name = await save_avatar(file, PATH_AVATARS, (256, 256), crop_square=True)
+async def upload_server_avatar(server_id: str, user_id: IsServerOwner, file: UploadFile):
+    file_name = await save_avatar(file)
 
     with db as tx:
         q = "UPDATE servers SET picture = ? WHERE id = ? AND owner_id = ? RETURNING *"
@@ -884,9 +892,9 @@ app.include_router(v1)
 
 # Public file handlers
 serve_avatars_lock = asyncio.Lock()
-@app.get("/avatars/{name}", response_class=FileResponse)
+@app.get("/avatars/{name}")
 async def serve_avatars(user_id: AuthUser, name: PictureName, size: Optional[Literal["80", "96"]] = None):
-    headers = {"Cache-Control": "private, max-age=2592000, immutable"}
+    headers = {"Cache-Control": "public, max-age=2592000, immutable"}
     original_file_path = FilePath(f"{PATH_AVATARS}/{name}")
 
     if not size: # if requests original
@@ -902,8 +910,8 @@ async def serve_avatars(user_id: AuthUser, name: PictureName, size: Optional[Lit
         raise HTTPException(404)
     async with serve_avatars_lock:
         if not resized_file_path.is_file():
-            await generate_resized_picture(original_file_path, int(size))
-    return FileResponse(resized_file_path, headers=headers)
+            avatar_bytes = await generate_resized_avatar(original_file_path, int(size))
+            return Response(avatar_bytes, headers=headers)
 
 # Svelte file handlers
 if os.path.exists("./dist"): # serve svelte frontend from dist folder, if it's there

@@ -1,0 +1,5 @@
+# if disabled, generated resized avatars won't be saved in avatars/{size} folders
+# instead, will be returned directly from memory after generation
+# disabling this can be useful if relying on nginx for .webp avatar caching
+# though if it's enabled while having nginx running, it will prioritise nginx caching either way
+cache_avatars: True
