@@ -26,18 +26,19 @@ import json
 import sqlite3
 import yaml
 import static_ffmpeg
-
-# will prioritise ffmpeg in path if there is
-static_ffmpeg.add_paths(weak=True)
+import subprocess
 
 # Config file
 class Config(BaseModel):
     cache_avatars: bool
+    force_bundled_ffmpeg: bool
 
 with open("config.yaml", "r") as file:
-    raw_config = yaml.safe_load(file)
-    cfg = Config.model_validate(raw_config)
-    print("Successfully loaded config file")
+    cfg = Config.model_validate(yaml.safe_load(file))
+
+static_ffmpeg.add_paths(weak=not cfg.force_bundled_ffmpeg)
+result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+print(f"Using '{result.stdout.splitlines()[0]}'")
 
 # Constants
 load_dotenv()

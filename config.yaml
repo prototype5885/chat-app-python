@@ -1,5 +1,11 @@
-# if disabled, generated resized avatars won't be saved in avatars/{size} folders
+# NOTE: best to leave things on default unless you really need to change something
+
+# if False, generated resized avatars won't be saved in avatars/{size} folders
 # instead, will be returned directly from memory after generation
 # disabling this can be useful if relying on nginx for .webp avatar caching
 # though if it's enabled while having nginx running, it will prioritise nginx caching either way
 cache_avatars: True
+
+# if False, it will first look for existing ffmpeg in path
+# if not found, use the bundled one as fallback
+force_bundled_ffmpeg: False
