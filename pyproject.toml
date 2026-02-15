@@ -9,10 +9,10 @@ dependencies = [
     "argon2-cffi==25.1.0",
     "bleach==6.3.0",
     "fastapi[standard-no-fastapi-cloud-cli]==0.128.8",
-    "pillow==12.1.1",
     "pyjwt==2.11.0",
     "python-dotenv==1.2.1",
     "python-ulid==3.1.0",
     "pyyaml>=6.0.3",
+    "static-ffmpeg>=3.0",
     "websockets==16.0",
 ]

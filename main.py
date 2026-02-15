@@ -14,9 +14,7 @@ from fastapi.security import APIKeyCookie
 from fastapi.websockets import WebSocket, WebSocketState, WebSocketDisconnect
 from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, StringConstraints, model_validator
 from argon2 import PasswordHasher, exceptions
-from PIL import Image
 import os
-import io
 import hashlib
 import aiofiles
 import jwt
@@ -27,6 +25,10 @@ import shutil
 import json
 import sqlite3
 import yaml
+import static_ffmpeg
+
+# will prioritise ffmpeg in path if there is
+static_ffmpeg.add_paths(weak=True)
 
 # Config file
 class Config(BaseModel):
@@ -211,46 +213,50 @@ user_cache = UserCache()
 
 # Helpers
 async def save_avatar(file: UploadFile):
-    buffer = io.BytesIO()
-    try:
-        with Image.open(io.BytesIO(await file.read())) as img:
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-        
-            s = min(img.size) # size 
-            w, h = img.size # width, height 
-            img = img.crop(((w - s) // 2, (h - s) // 2, (w + s) // 2, (h + s) // 2))
-            img = img.resize((256, 256), Image.Resampling.LANCZOS)
-            img.save(buffer, format="WEBP", quality=75, method=6)
-    except: 
-        raise HTTPException(422, "Error processing received avatar")
-   
-    buffer.seek(0)
-    img_bytes = buffer.getvalue()
+    cmd = [
+        "ffmpeg", "-threads", "1", "-hide_banner", "-loglevel", "error", "-i", "-",
+        "-vf", "crop='min(iw,ih):min(iw,ih)',scale=256:256:flags=lanczos,format=rgb24",
+        "-q:v", "75", "-compression_level", "6", "-f", "webp", "-"
+    ]
+    
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    img_bytes, error_bytes = await proc.communicate(await file.read())
+
+    if proc.returncode != 0:
+        # error = error_bytes.decode().strip()
+        raise HTTPException(400, "Error saving uploaded avatar")
+
     file_hash = hashlib.sha256(img_bytes).hexdigest()
     file_name = f"{file_hash}.webp"
-    final_path = FilePath(f"{PATH_AVATARS}/{file_name}")
+    save_path = FilePath(f"{PATH_AVATARS}/{file_name}")
 
     os.makedirs(PATH_AVATARS, exist_ok=True)
-    async with aiofiles.open(final_path, "wb") as f:
+    async with aiofiles.open(save_path, "wb") as f:
         await f.write(img_bytes)
     return file_name
 
 async def generate_resized_avatar(original_path: FilePath, size: int):
-    buffer = io.BytesIO()
-    async with aiofiles.open(original_path, "rb") as file:
-        with Image.open(io.BytesIO(await file.read())) as img:
-            img = img.resize((size, size), Image.Resampling.LANCZOS)
-            img.save(buffer, format="WEBP", quality=75, method=6)
-            
-    buffer.seek(0)
-    avatar_bytes = buffer.getvalue()
+    cmd = [
+        "ffmpeg", "-threads", "1", "-hide_banner", "-loglevel", "error", "-y", "-i", str(original_path),
+        "-vf", f"scale={size}:{size}:flags=lanczos",
+        "-q:v", "75", "-compression_level", "6", "-f", "webp", "-"
+    ]
+    
+    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    img_bytes, error_bytes = await proc.communicate()
+
+    if proc.returncode != 0:
+        # error = error_bytes.decode().strip()
+        raise HTTPException(400, "Error generating resized avatar")
+
     if cfg.cache_avatars:
         resized_file_path = FilePath(f"{original_path.parent}/{size}/{original_path.name}")
         os.makedirs(os.path.dirname(resized_file_path), exist_ok=True)
         async with aiofiles.open(resized_file_path, "wb") as f:
-            await f.write(avatar_bytes)
-    return avatar_bytes
+            await f.write(img_bytes)
+    return img_bytes
 
 def update_set_values(values: dict):
     return ", ".join([f"{column} = :{column}" for column in values.keys()])
