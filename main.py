@@ -12,7 +12,7 @@ from fastapi.param_functions import Depends, Form, Path
 from fastapi.exceptions import HTTPException, WebSocketException
 from fastapi.security import APIKeyCookie
 from fastapi.websockets import WebSocket, WebSocketState, WebSocketDisconnect
-from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, StringConstraints, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from argon2 import PasswordHasher, exceptions
 import os
 import hashlib
@@ -96,7 +96,6 @@ PictureName = Annotated[str, Path(pattern=r"^[a-f0-9]{64}\.webp$")]
 # Pydantic models:
 class UserRegisterRequest(BaseModel):
     username: UsernameStr
-    email: EmailStr
     password: PasswordStr
     password_repeat: PasswordStr
 
@@ -107,7 +106,7 @@ class UserRegisterRequest(BaseModel):
         return self
 
 class UserLoginRequest(BaseModel):
-    email: EmailStr
+    username: UsernameStr
     password: PasswordStr
 
 class UserSchema(BaseModel):
@@ -280,7 +279,6 @@ async def lifespan(app: FastAPI): # runs on start or before shutdown
         CREATE TABLE IF NOT EXISTS users (
             id CHAR(26) PRIMARY KEY,
             username VARCHAR({USERNAME_LEN.max}) NOT NULL UNIQUE,
-            email TEXT NOT NULL UNIQUE,
             display_name VARCHAR({DISPLAY_NAME_LEN.max}) NOT NULL,
             picture TEXT,
             password TEXT NOT NULL,
@@ -554,16 +552,16 @@ async def register_user(req: Annotated[UserRegisterRequest, Form()]):
     hashed_password = password_hasher.hash(req.password)
     try:
         with db as tx:
-            q = "INSERT INTO users (id, email, username, display_name, password) VALUES (?, ?, ?, ?, ?)"
-            tx.execute(q, (str(ULID()), req.email, req.username, req.username, hashed_password))
+            q = "INSERT INTO users (id, username, display_name, password) VALUES (?, ?, ?, ?)"
+            tx.execute(q, (str(ULID()), req.username, req.username, hashed_password))
     except sqlite3.IntegrityError:
-        raise HTTPException(409, "User with same e-mail or username already exists")
+        raise HTTPException(409, "User with same username already exists")
     return RedirectResponse("/login.html", 303)
 
 @v1.post("/user/login", response_class=RedirectResponse)
 async def login_user(req: Annotated[UserLoginRequest, Form()]):
-    q = "SELECT id, password FROM users WHERE email = ?"
-    row = db.execute(q, (req.email,)).fetchone()
+    q = "SELECT id, password FROM users WHERE username = ?"
+    row = db.execute(q, (req.username,)).fetchone()
     if not row:
         raise HTTPException(401, "Bad login")
     
