@@ -115,6 +115,7 @@ class UserSchema(BaseModel):
     display_name: DisplayNameStr
     picture: Optional[str] = None
     custom_status: Optional[str] = None
+    online: Optional[bool] = None
 
 class UserEditRequest(BaseModel):
     display_name: Optional[DisplayNameStr] = None
@@ -428,17 +429,42 @@ SubscriptionTarget = Literal["server_list", "server", "channel"]
 class WebSocketManager:
     def __init__(self):
         self.clients: dict[WebSocket, WebSocketClient] = {}
+        self.online_tracker: set[str] = set()
+
+    async def add_online(self, user_id: str):
+        if user_id not in self.online_tracker:
+            self.online_tracker.add(user_id)
+            data = {"id": user_id, "online": True}
+            await self.emit_to_servers("user_online", data, user_id)
+    
+    async def remove_online(self, user_id: str):
+        if any(ws_info.user_id == user_id for ws_info in self.clients.values()):
+            return # don't book user as offline yet if online on other devices
+        if user_id in self.online_tracker:
+            self.online_tracker.discard(user_id)
+            data = {"id": user_id, "online": False}
+            await self.emit_to_servers("user_online", data, user_id)
+
+    def whos_online(self, user_ids: set[str]) -> set[str]:
+        online_ids = {ws_info.user_id for ws_info in self.clients.values()}
+        return user_ids.intersection(online_ids)
+    
+    def is_online(self, user_id: str) -> bool:
+        return any(ws_info.user_id == user_id for ws_info in self.clients.values())
 
     async def connect(self, websocket: WebSocket, user_id: str):
         await websocket.accept()
         self.clients[websocket] = WebSocketClient(user_id=user_id)
+        await self.add_online(user_id)
 
     async def disconnect(self, websocket: WebSocket):
         if websocket in self.clients:
             if websocket.client_state != WebSocketState.DISCONNECTED:
                 try: await websocket.close()
                 except: pass
+            user_id = self.clients[websocket].user_id
             del self.clients[websocket]
+            await self.remove_online(user_id)
 
     async def handle_incoming_message(self, message: str, websocket: WebSocket):
         if websocket not in self.clients:
@@ -603,7 +629,9 @@ async def get_user_info(user_id: AuthUser):
     row = db.execute(q, (user_id,)).fetchone()
     if row is None:
         raise HTTPException(404, detail="User not found")
-    return dict(row)
+    user = UserSchema.model_validate(dict(row))
+    user.online = ws.is_online(user_id)
+    return user
     
 @v1.patch("/user", response_model=UserEditResponse)
 async def update_user_info(req: Annotated[UserEditRequest, Form()], user_id: AuthUser):
@@ -768,7 +796,14 @@ async def get_members(server_id: str, _: HasServerAccess):
     with db as tx:
         rows = tx.execute(q, {"s_id": server_id}).fetchall()
 
-    return [dict(row) for row in rows]
+    user_ids: set[str] = {row["id"] for row in rows}
+    online_ids = ws.whos_online(user_ids)
+    members: list[UserSchema] = []
+    for row in rows:
+        user = dict(row)
+        user["online"] = user["id"] in online_ids
+        members.append(UserSchema.model_validate(user))
+    return members
 
 @v1.post("/channel/{channel_id}/message", status_code=202, response_class=Response)
 async def create_message(channel_id: str, req: MessageCreateRequest, user_id: HasChannelAccess):
