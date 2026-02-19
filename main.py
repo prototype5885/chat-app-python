@@ -192,9 +192,9 @@ class UserCache:
         if not row:
             self.delete(user_id)
             raise HTTPException(500)
-        
+
         self._cache[user_id] = self.UserCacheValue(row[0], row[1])
- 
+
     def get(self, user_id: str):
         if user_id not in self._cache:
             self._set_from_db(user_id)
@@ -219,7 +219,7 @@ async def save_avatar(file: UploadFile):
         "-vf", "crop='min(iw,ih):min(iw,ih)',scale=256:256:flags=lanczos,format=rgb24",
         "-q:v", "75", "-compression_level", "6", "-f", "webp", "-"
     ]
-    
+
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
@@ -244,7 +244,7 @@ async def generate_resized_avatar(original_path: FilePath, size: int):
         "-vf", f"scale={size}:{size}:flags=lanczos",
         "-q:v", "75", "-compression_level", "6", "-f", "webp", "-"
     ]
-    
+
     proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     img_bytes, error_bytes = await proc.communicate()
 
@@ -342,7 +342,7 @@ async def auth_user(token: str | None = Depends(APIKeyCookie(name="token", auto_
         jwt_payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
     except:
         raise HTTPException(303, "Error decoding jwt", headers=redirect_headers)
-    
+
     user_id = jwt_payload.get("user_id")
     if not isinstance(user_id, str):
         raise HTTPException(303, "Error getting user_id from jwt", headers=redirect_headers)
@@ -385,8 +385,8 @@ HasServerAccess = Annotated[str, Depends(has_server_access)]
 async def is_channel_owner(channel_id: UlidStr, user_id: AuthUser) -> str:
     q = """
         SELECT EXISTS (
-            SELECT 1 FROM channels 
-            JOIN servers ON channels.server_id = servers.id 
+            SELECT 1 FROM channels
+            JOIN servers ON channels.server_id = servers.id
             WHERE channels.id = ? AND servers.owner_id = ?
         )"""
     row = db.execute(q, (channel_id, user_id,)).fetchone()
@@ -404,7 +404,7 @@ async def has_channel_access(channel_id: UlidStr, user_id: AuthUser) -> str:
             SELECT 1 FROM channels c
             JOIN servers s ON c.server_id = s.id
             LEFT JOIN server_members m ON s.id = m.server_id AND m.member_id = :u_id
-            WHERE c.id = :c_id 
+            WHERE c.id = :c_id
             AND (s.owner_id = :u_id OR m.member_id IS NOT NULL)
         )"""
     row = db.execute(q, {"c_id": channel_id, "u_id": user_id}).fetchone()
@@ -436,7 +436,7 @@ class WebSocketManager:
             self.online_tracker.add(user_id)
             data = {"id": user_id, "online": True}
             await self.emit_to_servers("user_online", data, user_id)
-    
+
     async def remove_online(self, user_id: str):
         if any(ws_info.user_id == user_id for ws_info in self.clients.values()):
             return # don't book user as offline yet if online on other devices
@@ -448,7 +448,7 @@ class WebSocketManager:
     def whos_online(self, user_ids: set[str]) -> set[str]:
         online_ids = {ws_info.user_id for ws_info in self.clients.values()}
         return user_ids.intersection(online_ids)
-    
+
     def is_online(self, user_id: str) -> bool:
         return any(ws_info.user_id == user_id for ws_info in self.clients.values())
 
@@ -473,31 +473,31 @@ class WebSocketManager:
         user_id = self.clients[websocket].user_id
         event, data = message.split(" ", maxsplit=1)
 
-        def subscribe(target_subs: SubscriptionTarget, id: str):  
+        def subscribe(target_subs: SubscriptionTarget, id: str):
             match target_subs:
                 case "channel": self.clients[websocket].channel_id = id
                 case "server": self.clients[websocket].server_id = id
 
         async def reply_exception(error: Exception):
             await websocket.send_text(f"exception error on event: '{event}', error: '{error}'")
-        
+
         match event:
             case "subscribe_to_message_list":
                 channel_id = data
-                try: 
+                try:
                     await has_channel_access(channel_id, user_id)
                     subscribe("channel", channel_id)
-                except Exception as e: 
+                except Exception as e:
                     await reply_exception(e)
 
             case "subscribe_to_channel_list":
                 server_id = data
-                try: 
+                try:
                     await has_server_access(server_id, user_id)
                     subscribe("server", server_id)
-                except Exception as e: 
+                except Exception as e:
                     await reply_exception(e)
-    
+
     async def emit(self, event: str, data: dict, target_subs: SubscriptionTarget, target_id: str):
         message = f"{event} {json.dumps(data)}"
         tasks = []
@@ -512,7 +512,7 @@ class WebSocketManager:
                 rows = db.execute(q, {"s_id": target_id}).fetchall()
                 user_ids: list[str] = [(row[0]) for row in rows]
                 assert user_ids
-                    
+
                 for ws_conn, ws_info in list(self.clients.items()):
                     if ws_info.user_id in user_ids:
                         tasks.append(ws_conn.send_text(message))
@@ -529,7 +529,7 @@ class WebSocketManager:
 
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-                
+
     # will send to those who have visual on affected change (like: user changed name)
     async def emit_to_servers(self, event: str, data: dict, user_id: str):
         q = """
@@ -568,7 +568,7 @@ async def websocket_endpoint(websocket: WebSocket):
         pass
     finally:
         await ws.disconnect(websocket)
-        
+
 
 # FastAPI paths
 v1 = APIRouter(prefix="/api/v1")
@@ -590,7 +590,7 @@ async def login_user(req: Annotated[UserLoginRequest, Form()]):
     row = db.execute(q, (req.username,)).fetchone()
     if not row:
         raise HTTPException(401, "Bad login")
-    
+
     user_id, password = row
     try:
         password_hasher.verify(password, req.password)
@@ -600,7 +600,7 @@ async def login_user(req: Annotated[UserLoginRequest, Form()]):
     days: int = 14
     expires = datetime.now(timezone.utc) + timedelta(days=days)
     encoded_jwt = jwt.encode({"user_id": user_id, "exp": expires}, JWT_SECRET, algorithm="HS256")
-    
+
     response = RedirectResponse("/", 303)
     response.set_cookie(key="token", value=encoded_jwt, httponly=True, secure=True, samesite="lax", max_age=days * 24 * 3600)
     return response
@@ -632,7 +632,7 @@ async def get_user_info(user_id: AuthUser):
     user = UserSchema.model_validate(dict(row))
     user.online = ws.is_online(user_id)
     return user
-    
+
 @v1.patch("/user", response_model=UserEditResponse)
 async def update_user_info(req: Annotated[UserEditRequest, Form()], user_id: AuthUser):
     values = req.model_dump(exclude_unset=True)
@@ -653,7 +653,7 @@ async def update_user_info(req: Annotated[UserEditRequest, Form()], user_id: Aut
 @v1.post("/user/upload/avatar", response_class=PlainTextResponse)
 async def upload_user_avatar(user_id: AuthUser, file: UploadFile):
     file_name = await save_avatar(file)
-    
+
     with db as tx:
         q = "UPDATE users SET picture = ? WHERE id = ?"
         tx.execute(q, (file_name, user_id,))
@@ -670,13 +670,13 @@ async def create_server(req: ServerCreateRequest, user_id: AuthUser):
     server_id = str(ULID())
     channel_id = str(ULID())
 
-    with db as tx: 
+    with db as tx:
         q1 = "INSERT INTO servers (id, owner_id, name) VALUES (?, ?, ?)"
         tx.execute(q1, (server_id, user_id, req.name))
 
         q2 = "INSERT INTO channels (id, server_id, name) VALUES (?, ?, ?)"
         tx.execute(q2, (channel_id, server_id, "Default channel"))
-    
+
     q3 = "SELECT id, owner_id, name, picture, banner, roles FROM servers WHERE id = ?"
     row = db.execute(q3, (server_id,)).fetchone()
     return dict(row)
@@ -737,7 +737,7 @@ async def delete_server(server_id: UlidStr, user_id: IsServerOwner):
 
     with db as tx:
         tx.execute("DELETE FROM servers WHERE id = ?", (server_id,))
-    
+
 @v1.post("/server/{server_id}/channel", status_code=202, response_class=Response)
 async def create_channel(server_id: str, req: ChannelCreateRequest, user_id: IsServerOwner):
     channel = ChannelSchema(id=str(ULID()), server_id=server_id, name=req.name).model_dump()
@@ -758,7 +758,7 @@ async def update_channel_info(channel_id: str, req: Annotated[ChannelEditRequest
     values = req.model_dump(exclude_unset=True)
     if not values:
         raise HTTPException(400, "No fields were provided")
-        
+
     q = f"UPDATE channels SET {update_set_values(values)} WHERE id = :c_id RETURNING *"
     with db as tx:
         row = tx.execute(q, {**values, "c_id": channel_id}).fetchone()
@@ -815,7 +815,7 @@ async def create_message(channel_id: str, req: MessageCreateRequest, user_id: Ha
 
     display_name, picture = user_cache.get(user_id)
     data = MessageResponse(
-        id=message_id, sender_id=user_id, channel_id=channel_id, 
+        id=message_id, sender_id=user_id, channel_id=channel_id,
         message=req.message, display_name=display_name, picture=picture
     ).model_dump()
     await ws.emit("create_message", data, "channel", channel_id)
@@ -824,8 +824,8 @@ async def create_message(channel_id: str, req: MessageCreateRequest, user_id: Ha
 async def edit_message(message_id: UlidStr, req: MessageEditRequest, user_id: AuthUser):
     with db as tx:
         q = """
-            UPDATE messages SET message = ?, edited = CURRENT_TIMESTAMP 
-            WHERE id = ? AND sender_id = ? 
+            UPDATE messages SET message = ?, edited = CURRENT_TIMESTAMP
+            WHERE id = ? AND sender_id = ?
             RETURNING *
         """
         row = tx.execute(q, (req.message, message_id, user_id,)).fetchone()
@@ -854,30 +854,30 @@ async def get_messages(channel_id: str, user_id: HasChannelAccess,
     message_id: str | None = None, direction: Literal["before", "after", None] = None
 ):
     # fetch newer messages scrolling down
-    if message_id and direction == "after": 
+    if message_id and direction == "after":
         q = """
-            SELECT m.*, u.display_name, u.picture FROM messages m 
-            JOIN users u ON m.sender_id = u.id 
+            SELECT m.*, u.display_name, u.picture FROM messages m
+            JOIN users u ON m.sender_id = u.id
             WHERE m.channel_id = :c_id AND m.id > :m_id
             ORDER BY m.id ASC LIMIT 100
         """
         params = {"c_id": channel_id, "m_id": message_id}
 
     # fetch older messages scrolling up
-    elif message_id and direction == "before": 
+    elif message_id and direction == "before":
         q = """
-            SELECT m.*, u.display_name, u.picture FROM messages m 
-            JOIN users u ON m.sender_id = u.id 
+            SELECT m.*, u.display_name, u.picture FROM messages m
+            JOIN users u ON m.sender_id = u.id
             WHERE m.channel_id = :c_id AND m.id < :m_id
             ORDER BY m.id DESC LIMIT 100
         """
         params = {"c_id": channel_id, "m_id": message_id}
 
     # fetch last messages
-    else: 
+    else:
         q = """
-            SELECT m.*, u.display_name, u.picture FROM messages m 
-            JOIN users u ON m.sender_id = u.id 
+            SELECT m.*, u.display_name, u.picture FROM messages m
+            JOIN users u ON m.sender_id = u.id
             WHERE m.channel_id = :c_id
             ORDER BY m.id DESC LIMIT 100
         """
@@ -941,11 +941,11 @@ async def serve_avatars(user_id: AuthUser, name: PictureName, size: Optional[Lit
         if original_file_path.is_file():
             return FileResponse(original_file_path, headers=headers)
         raise HTTPException(404)
-            
+
     resized_file_path = FilePath(f"{PATH_AVATARS}/{size}/{name}") # if requests resized
     if resized_file_path.is_file():
         return FileResponse(resized_file_path, headers=headers)
-        
+
     if not original_file_path.is_file(): # create resized if not found
         raise HTTPException(404)
     async with serve_avatars_lock:
