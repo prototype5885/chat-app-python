@@ -538,9 +538,9 @@ class WebSocketManager:
             SELECT server_id FROM server_members WHERE member_id = :u_id
         """
         cursor = db.execute(q, {"u_id": user_id})
-        server_ids: list[str] = [row[0] for row in cursor.fetchall()]
 
-        for server_id in server_ids:
+        for row in cursor.fetchall():
+            server_id: str = row[0]
             await self.emit(event, data, "server", server_id)
 
     async def emit_to_user(self, event: str, data: dict, user_id: str):
