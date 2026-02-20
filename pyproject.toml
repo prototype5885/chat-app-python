@@ -16,3 +16,6 @@ dependencies = [
     "static-ffmpeg>=3.0",
     "websockets==16.0",
 ]
+
+[tool.basedpyright]
+typeCheckingMode = "standard"

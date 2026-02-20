@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, Dict, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 from ulid import ULID
 from fastapi import APIRouter, FastAPI,  Response, UploadFile
 from fastapi.param_functions import Depends, Form, Path
@@ -64,7 +64,7 @@ db: sqlite3.Connection
 class FieldLength:
     min: int
     max: int
-    def kwargs(self) -> Dict[str, Any]:
+    def kwargs(self) -> dict[str, Any]:
         return {"min_length": self.min,"max_length": self.max}
 
 ULID_LEN = 26
@@ -498,7 +498,7 @@ class WebSocketManager:
                 except Exception as e:
                     await reply_exception(e)
 
-    async def emit(self, event: str, data: dict, target_subs: SubscriptionTarget, target_id: str):
+    async def emit(self, event: str, data: dict[str, Any], target_subs: SubscriptionTarget, target_id: str):
         message = f"{event} {json.dumps(data)}"
         tasks = []
 
@@ -531,7 +531,7 @@ class WebSocketManager:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     # will send to those who have visual on affected change (like: user changed name)
-    async def emit_to_servers(self, event: str, data: dict, user_id: str):
+    async def emit_to_servers(self, event: str, data: dict[str, Any], user_id: str):
         q = """
             SELECT id FROM servers WHERE owner_id = :u_id
             UNION
@@ -543,7 +543,7 @@ class WebSocketManager:
             server_id: str = row[0]
             await self.emit(event, data, "server", server_id)
 
-    async def emit_to_user(self, event: str, data: dict, user_id: str):
+    async def emit_to_user(self, event: str, data: dict[str, Any], user_id: str):
         message = f"{event} {json.dumps(data)}"
         for ws_conn, ws_info in self.clients.items():
             if ws_info.user_id == user_id:
