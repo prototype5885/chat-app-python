@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, Literal, Optional
+from typing import Annotated, Any, Literal
 from ulid import ULID
 from fastapi import APIRouter, FastAPI,  Response, UploadFile
 from fastapi.param_functions import Depends, Form, Path
@@ -113,32 +113,32 @@ class UserSchema(BaseModel):
     id: str
     username: UsernameStr
     display_name: DisplayNameStr
-    picture: Optional[str] = None
-    custom_status: Optional[str] = None
-    online: Optional[bool] = None
+    picture: str | None = None
+    custom_status: str | None = None
+    online: bool | None = None
 
 class UserEditRequest(BaseModel):
-    display_name: Optional[DisplayNameStr] = None
+    display_name: DisplayNameStr | None = None
 
 class UserEditResponse(BaseModel):
     id: str
-    display_name: Optional[str] = None
-    picture: Optional[str] = None
-    custom_status: Optional[str] = None
+    display_name: str | None = None
+    picture: str | None = None
+    custom_status: str | None = None
 
 class ServerSchema(BaseModel):
     id: str
     owner_id: str
     name: ServerNameStr
-    picture: Optional[str] = None
-    banner: Optional[str] = None
-    roles: Optional[str] = None
+    picture: str | None = None
+    banner: str | None = None
+    roles: str | None = None
 
 class ServerCreateRequest(BaseModel):
     name: ServerNameStr
 
 class ServerEditRequest(BaseModel):
-    name: Optional[ServerNameStr] = None
+    name: ServerNameStr | None = None
 
 class ChannelSchema(BaseModel):
     id: str
@@ -149,7 +149,7 @@ class ChannelCreateRequest(BaseModel):
     name: ChannelNameStr
 
 class ChannelEditRequest(BaseModel):
-    name: Optional[ChannelNameStr] = None
+    name: ChannelNameStr | None = None
 
 class MessageCreateRequest(BaseModel):
     message: MessageStr
@@ -161,8 +161,8 @@ class MessageEditResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
     message: MessageStr
-    attachments: Optional[str] = None
-    edited: Optional[str] = None
+    attachments: str | None = None
+    edited: str | None = None
 
 class MessageResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -170,10 +170,10 @@ class MessageResponse(BaseModel):
     sender_id: str
     channel_id: str
     message: MessageStr
-    attachments: Optional[str] = None
-    edited: Optional[str] = None
+    attachments: str | None = None
+    edited: str | None = None
     display_name: DisplayNameStr
-    picture: Optional[str] = None
+    picture: str | None = None
 
 # Cache
 class UserCache:
@@ -933,7 +933,7 @@ app.include_router(v1)
 # Public file handlers
 serve_avatars_lock = asyncio.Lock()
 @app.get("/avatars/{name}")
-async def serve_avatars(user_id: AuthUser, name: PictureName, size: Optional[Literal["80", "96"]] = None):
+async def serve_avatars(user_id: AuthUser, name: PictureName, size: Literal["80", "96"] | None = None):
     headers = {"Cache-Control": "public, max-age=2592000, immutable"}
     original_file_path = FilePath(f"{PATH_AVATARS}/{name}")
 
