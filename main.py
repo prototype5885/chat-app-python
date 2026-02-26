@@ -15,6 +15,7 @@ from fastapi.websockets import WebSocket, WebSocketState, WebSocketDisconnect
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from argon2 import PasswordHasher, exceptions
 from cachetools import LRUCache
+from types import CoroutineType
 import os
 import hashlib
 import aiofiles
@@ -37,20 +38,22 @@ class Config(BaseModel):
 with open("config.toml", "rb") as file:
     cfg = Config.model_validate(tomllib.load(file))
 
-static_ffmpeg.add_paths(weak=not cfg.force_bundled_ffmpeg)
+static_ffmpeg.add_paths(weak=not cfg.force_bundled_ffmpeg)  # pyright: ignore[reportUnknownMemberType]
 result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
 print(f"Using '{result.stdout.splitlines()[0]}'")
 
 # Constants
 load_dotenv()
 if not os.getenv("JWT_SECRET"):
+    hash = secrets.token_hex(32)
     with open(".env", 'w') as f:
-        JWT_SECRET = secrets.token_hex(32)
-        f.write(f"JWT_SECRET={JWT_SECRET}")
-        print("Generated new JWT_SECRET into .env")
-else:
-    JWT_SECRET = os.environ["JWT_SECRET"]
-    print("Loaded JWT_SECRET from .env")
+        f.write(f"JWT_SECRET={hash}")
+
+    print("Generated JWT_SECRET into .env file")
+    os.environ["JWT_SECRET"] = hash
+
+JWT_SECRET = os.environ["JWT_SECRET"]
+print("Loaded JWT_SECRET from .env file")
 
 PATH_PUBLIC = "public"
 PATH_AVATARS = "public/avatars"
@@ -227,7 +230,8 @@ async def save_avatar(file: UploadFile):
     img_bytes, error_bytes = await proc.communicate(await file.read())
 
     if proc.returncode != 0:
-        # error = error_bytes.decode().strip()
+        error = error_bytes.decode().strip()
+        print(error)
         raise HTTPException(400, "Error saving uploaded avatar")
 
     file_hash = hashlib.sha256(img_bytes).hexdigest()
@@ -250,7 +254,8 @@ async def generate_resized_avatar(original_path: FilePath, size: int):
     img_bytes, error_bytes = await proc.communicate()
 
     if proc.returncode != 0:
-        # error = error_bytes.decode().strip()
+        error = error_bytes.decode().strip()
+        print(error)
         raise HTTPException(400, "Error generating resized avatar")
 
     if cfg.cache_avatars:
@@ -260,7 +265,7 @@ async def generate_resized_avatar(original_path: FilePath, size: int):
             await f.write(img_bytes)
     return img_bytes
 
-def update_set_values(values: dict):
+def update_set_values(values: dict[str, Any]):
     return ", ".join([f"{column} = :{column}" for column in values.keys()])
 
 # FastAPI setup
@@ -478,6 +483,7 @@ class WebSocketManager:
             match target_subs:
                 case "channel": self.clients[websocket].channel_id = id
                 case "server": self.clients[websocket].server_id = id
+                case _: pass
 
         async def reply_exception(error: Exception):
             await websocket.send_text(f"exception error on event: '{event}', error: '{error}'")
@@ -498,10 +504,12 @@ class WebSocketManager:
                     subscribe("server", server_id)
                 except Exception as e:
                     await reply_exception(e)
+            case _:
+                pass
 
     async def emit(self, event: str, data: dict[str, Any], target_subs: SubscriptionTarget, target_id: str):
         message = f"{event} {json.dumps(data)}"
-        tasks = []
+        tasks: list[CoroutineType[Any, Any, None]] = []
 
         match target_subs:
             case "server_list":
