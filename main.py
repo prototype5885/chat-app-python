@@ -14,6 +14,7 @@ from fastapi.security import APIKeyCookie
 from fastapi.websockets import WebSocket, WebSocketState, WebSocketDisconnect
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from argon2 import PasswordHasher, exceptions
+from cachetools import LRUCache
 import os
 import hashlib
 import aiofiles
@@ -184,7 +185,7 @@ class UserCache:
         def __iter__(self):
             return iter(astuple(self))
 
-    _cache: dict[str, UserCacheValue] = {}
+    _cache: LRUCache[str, UserCacheValue] = LRUCache(maxsize=8192 * 8)
 
     def _set_from_db(self, user_id: str):
         q = "SELECT display_name, picture FROM users WHERE id = ?"

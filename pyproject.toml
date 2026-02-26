@@ -8,6 +8,7 @@ dependencies = [
     "aiofiles==25.1.0",
     "argon2-cffi==25.1.0",
     "bleach==6.3.0",
+    "cachetools>=7.0.1",
     "fastapi[standard-no-fastapi-cloud-cli]==0.128.8",
     "pyjwt==2.11.0",
     "python-dotenv==1.2.1",
